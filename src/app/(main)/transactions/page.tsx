@@ -55,12 +55,13 @@ interface Message {
   text: string;
   time: string;
   confirmationCard?: {
-    type: string; // INCOME | EXPENSE
+    type: string; // INCOME | EXPENSE | DEBT_LENT | DEBT_BORROWED
     amount: number;
     wallet: string; // Wallet name
-    category: string; // Category name
+    category?: string | null; // Category name (optional for debts)
     description: string;
     note?: string;
+    partner?: string; // Debt partner name
     status: "pending" | "saved" | "cancelled";
   };
 }
@@ -88,6 +89,7 @@ function TransactionsContent() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [debtPartners, setDebtPartners] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Filters
@@ -161,7 +163,14 @@ function TransactionsContent() {
         setFormCategoryId(categoriesData[0].id);
       }
 
-      // 3. Fetch Transactions
+      // 3. Fetch Debt Partners
+      const { data: partnersData } = await supabase
+        .from("debt_partners")
+        .select("id, name")
+        .order("name", { ascending: true });
+      setDebtPartners(partnersData || []);
+
+      // 4. Fetch Transactions
       await fetchTransactions();
     } catch (err) {
       console.error("Error loading initial data:", err);
@@ -385,140 +394,179 @@ function TransactionsContent() {
     }
   };
 
-  // --- MOCK CHAT AI PARSING (Same logic, maps to DB on save) ---
-  const handleSendMessage = () => {
+  // --- CHAT AI PARSING via API Router ---
+  const handleSendMessage = async () => {
     if (!chatInput.trim()) return;
 
+    const userText = chatInput;
     const userMsg: Message = {
       id: `msg-user-${Date.now()}`,
       sender: "user",
-      text: chatInput,
+      text: userText,
       time: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
     };
 
     setMessages((prev) => [...prev, userMsg]);
-    const currentInput = chatInput.toLowerCase();
     setChatInput("");
     setIsTyping(true);
 
-    setTimeout(() => {
-      setIsTyping(false);
-      let aiText = "I have analyzed your statement. Please confirm the transaction card details below to save it:";
-      let amount = 50000;
-      let walletName = wallets.length > 0 ? wallets[0].name : "Ví tiền mặt";
-      let categoryName = "Ăn uống";
-      let type = "EXPENSE";
-      let description = "Dining expenditure";
-      let note = "";
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: userText,
+          wallets: wallets.map((w) => w.name),
+          categories: categories.map((c) => ({ name: c.name, type: c.type })),
+          partners: debtPartners.map((p) => p.name),
+        }),
+      });
 
-      if (currentInput.includes("for ")) {
-        const parts = currentInput.split("for ");
-        if (parts.length > 1) note = parts[1].trim();
-      } else if (currentInput.includes("with ")) {
-        const parts = currentInput.split("with ");
-        if (parts.length > 1) note = "With " + parts[1].trim();
-      }
-
-      if (currentInput.includes("salary") || currentInput.includes("earned") || currentInput.includes("received") || currentInput.includes("income")) {
-        type = "INCOME";
-        categoryName = "Lương";
-        description = "Salary Inflow";
-        amount = 10000000;
-      }
-      
-      const numberMatches = currentInput.match(/\d+(\s*(k|m|million|triệu|tr))?/g);
-      if (numberMatches) {
-        const rawNumStr = numberMatches[0];
-        const numVal = parseInt(rawNumStr.replace(/\D/g, ""));
-        if (rawNumStr.includes("k")) {
-          amount = numVal * 1000;
-        } else if (rawNumStr.includes("m") || rawNumStr.includes("million") || rawNumStr.includes("triệu") || rawNumStr.includes("tr")) {
-          amount = numVal * 1000000;
-        } else {
-          amount = numVal;
-        }
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Failed to analyze your transaction.");
       }
 
-      // Check against current user wallets
-      const foundWallet = wallets.find(w => currentInput.includes(w.name.toLowerCase()));
-      if (foundWallet) {
-        walletName = foundWallet.name;
-      }
-
-      // Check against categories
-      const foundCategory = categories.find(c => currentInput.includes(c.name.toLowerCase()));
-      if (foundCategory) {
-        categoryName = foundCategory.name;
-      }
-
-      if (note) {
-        note = note.charAt(0).toUpperCase() + note.slice(1);
-      }
+      const result = await response.json();
 
       const aiMsg: Message = {
         id: `msg-ai-${Date.now()}`,
         sender: "ai",
-        text: aiText,
+        text: "I have analyzed your statement. Please confirm the transaction card details below to save it:",
         time: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
         confirmationCard: {
-          type,
-          amount,
-          wallet: walletName,
-          category: categoryName,
-          description,
-          note: note || undefined,
-          status: "pending"
-        }
+          type: result.type,
+          amount: result.amount,
+          wallet: result.wallet,
+          category: result.category,
+          description: result.description,
+          partner: result.partner || undefined,
+          note: (result.note && result.note.toLowerCase() !== "null" && result.note.toLowerCase() !== "none" && result.note !== ".") ? result.note : undefined,
+          status: "pending",
+        },
       };
 
       setMessages((prev) => [...prev, aiMsg]);
-    }, 1000);
+    } catch (err: any) {
+      console.error("AI Assistant Error:", err);
+      const errorMsg: Message = {
+        id: `msg-ai-err-${Date.now()}`,
+        sender: "ai",
+        text: `❌ Error: ${err.message || "Something went wrong while talking to the AI. Please verify your API keys or try again."}`,
+        time: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   const handleConfirmCard = async (msgId: string, action: "save" | "cancel") => {
     if (!user) return;
     
-    setMessages((prev) => 
-      prev.map((msg) => {
-        if (msg.id === msgId && msg.confirmationCard) {
-          const card = msg.confirmationCard;
-          if (action === "save") {
-            // Find wallet id by name
-            const wId = wallets.find(w => w.name.toLowerCase() === card.wallet.toLowerCase())?.id || wallets[0]?.id;
-            // Find category id by name
-            const cId = categories.find(c => c.name.toLowerCase() === card.category.toLowerCase())?.id || categories[0]?.id;
-
-            // Trigger DB Save
-            supabase.from("transactions").insert({
-              user_id: user.id,
-              wallet_id: wId,
-              category_id: cId || null,
-              amount: card.amount,
-              type: card.type,
-              description: card.description,
-              note: card.note || null,
-              status: "COMPLETED"
-            }).then(({ error }) => {
-              if (error) console.error("Error saving AI transaction:", error);
-              else fetchTransactions();
-            });
-            
-            return {
-              ...msg,
-              text: `✅ Saved transaction **${card.description}** successfully!\nAmount: ${formatCurrency(card.amount)} in **${card.wallet}** wallet (Category: ${card.category}).${card.note ? `\nNote: *"${card.note}"*` : ""}`,
-              confirmationCard: { ...card, status: "saved" }
-            };
-          } else {
+    if (action === "cancel") {
+      setMessages((prev) => 
+        prev.map((msg) => {
+          if (msg.id === msgId && msg.confirmationCard) {
             return {
               ...msg,
               text: `❌ Transaction cancelled. Feel free to type another request.`,
-              confirmationCard: { ...card, status: "cancelled" }
+              confirmationCard: { ...msg.confirmationCard, status: "cancelled" }
             };
           }
+          return msg;
+        })
+      );
+      return;
+    }
+
+    // "save" action
+    const targetMsg = messages.find(m => m.id === msgId);
+    if (!targetMsg || !targetMsg.confirmationCard) return;
+    const card = targetMsg.confirmationCard;
+
+    try {
+      // 1. Resolve Wallet ID
+      const wId = wallets.find(w => w.name.toLowerCase() === card.wallet.toLowerCase())?.id || wallets[0]?.id;
+      
+      // 2. Resolve Category ID (only for standard income/expense)
+      const isDebt = card.type === "DEBT_LENT" || card.type === "DEBT_BORROWED";
+      let cId = null;
+      if (!isDebt && card.category) {
+        cId = categories.find(c => c.name.toLowerCase() === card.category!.toLowerCase())?.id || categories[0]?.id;
+      }
+
+      // 3. Resolve or Create Debt Partner ID (only for debt)
+      let partnerId = null;
+      if (isDebt && card.partner) {
+        const matched = debtPartners.find(p => p.name.toLowerCase() === card.partner!.toLowerCase());
+        if (matched) {
+          partnerId = matched.id;
+        } else {
+          // Dynamic partner creation
+          const { data: newPartner, error: partnerErr } = await supabase
+            .from("debt_partners")
+            .insert({ user_id: user.id, name: card.partner.trim() })
+            .select()
+            .single();
+
+          if (partnerErr) throw partnerErr;
+          partnerId = newPartner.id;
+          
+          // Add to local state list so we don't recreate it next time
+          setDebtPartners(prev => [...prev, { id: newPartner.id, name: newPartner.name }]);
         }
-        return msg;
-      })
-    );
+      }
+
+      // 4. Save Transaction to Supabase
+      const status = isDebt ? "PENDING" : "COMPLETED";
+      const { error: txErr } = await supabase.from("transactions").insert({
+        user_id: user.id,
+        wallet_id: wId,
+        category_id: cId || null,
+        debt_partner_id: partnerId || null,
+        amount: card.amount,
+        type: card.type,
+        description: card.description,
+        note: card.note || null,
+        status: status
+      });
+
+      if (txErr) throw txErr;
+
+      // 5. Refetch Transactions to update UI
+      fetchTransactions();
+
+      // 6. Update Messages UI state to marked as saved
+      setMessages((prev) =>
+        prev.map((msg) => {
+          if (msg.id === msgId && msg.confirmationCard) {
+            let successText = `✅ Saved transaction **${card.description}** successfully!\nAmount: ${formatCurrency(card.amount)} in **${card.wallet}** wallet.`;
+            if (isDebt && card.partner) {
+              const actionLabel = card.type === "DEBT_LENT" ? "lent to" : "borrowed from";
+              successText = `✅ Recorded debt successfully!\nAmount: ${formatCurrency(card.amount)} in **${card.wallet}** wallet ${actionLabel} **${card.partner}** (Status: PENDING).`;
+            } else if (card.category) {
+              successText += ` (Category: ${card.category}).`;
+            }
+            if (card.note) {
+              successText += `\nNote: *"${card.note}"*`;
+            }
+            return {
+              ...msg,
+              text: successText,
+              confirmationCard: { ...card, status: "saved" }
+            };
+          }
+          return msg;
+        })
+      );
+
+    } catch (err) {
+      console.error("Error saving AI transaction:", err);
+      alert("Failed to save transaction: " + (err as any).message);
+    }
   };
 
   // Markdown Parser
@@ -829,9 +877,14 @@ function TransactionsContent() {
                                 <Sparkles className="h-3 w-3" /> Confirm Transaction
                               </span>
                               <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
-                                msg.confirmationCard.type === "EXPENSE" ? "bg-rose-500/10 text-rose-500" : "bg-emerald-500/10 text-emerald-500"
+                                msg.confirmationCard.type === "EXPENSE" || msg.confirmationCard.type === "DEBT_LENT"
+                                  ? "bg-rose-500/10 text-rose-500" 
+                                  : "bg-emerald-500/10 text-emerald-500"
                               }`}>
-                                {msg.confirmationCard.type === "EXPENSE" ? "Expense" : "Income"}
+                                {msg.confirmationCard.type === "EXPENSE" && "Expense"}
+                                {msg.confirmationCard.type === "INCOME" && "Income"}
+                                {msg.confirmationCard.type === "DEBT_LENT" && "Lent (Loan)"}
+                                {msg.confirmationCard.type === "DEBT_BORROWED" && "Borrowed (Debt)"}
                               </span>
                             </div>
 
@@ -848,10 +901,18 @@ function TransactionsContent() {
                                 <span className="text-muted-foreground">Wallet Account:</span>
                                 <span className="font-medium text-emerald-600 dark:text-emerald-400">{msg.confirmationCard.wallet}</span>
                               </div>
-                              <div className="flex justify-between">
-                                <span className="text-muted-foreground">Category:</span>
-                                <span className="font-medium">{msg.confirmationCard.category}</span>
-                              </div>
+                              {msg.confirmationCard.partner && (
+                                <div className="flex justify-between">
+                                  <span className="text-muted-foreground">Debt Partner:</span>
+                                  <span className="font-semibold text-amber-500">{msg.confirmationCard.partner}</span>
+                                </div>
+                              )}
+                              {msg.confirmationCard.category && (
+                                <div className="flex justify-between">
+                                  <span className="text-muted-foreground">Category:</span>
+                                  <span className="font-medium">{msg.confirmationCard.category}</span>
+                                </div>
+                              )}
                               
                               {msg.confirmationCard.note && (
                                 <div className="flex justify-between border-t border-dashed border-border pt-1.5 mt-1.5">
