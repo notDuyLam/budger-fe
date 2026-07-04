@@ -16,23 +16,37 @@ import {
   ShoppingBag,
   UserCheck,
   ChevronDown,
-  Plus
+  Plus,
+  Loader2,
+  Trash2,
+  Edit2
 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/components/shared/AuthProvider";
 
-// Mock Categories & Wallets (English)
-const WALLETS = ["All", "Cash", "Techcombank", "MoMo Wallet", "Credit Card"];
-const CATEGORIES = ["All", "Dining", "Income", "Loans", "Shopping", "Repayments", "Transport"];
+interface Wallet {
+  id: string;
+  name: string;
+}
+
+interface Category {
+  id: string;
+  name: string;
+  type: "INCOME" | "EXPENSE";
+}
 
 interface Transaction {
   id: string;
-  title: string;
+  description: string;
   amount: number;
-  category: string;
-  wallet: string;
-  time: string;
-  dateStr: string; // Group date
   type: string;
-  note?: string; // Optional Note
+  created_at: string;
+  wallet_id: string;
+  category_id: string;
+  note?: string;
+  wallet_name?: string;
+  category_name?: string;
+  dateStr?: string;
 }
 
 interface Message {
@@ -43,15 +57,14 @@ interface Message {
   confirmationCard?: {
     type: string; // INCOME | EXPENSE
     amount: number;
-    wallet: string;
-    category: string;
+    wallet: string; // Wallet name
+    category: string; // Category name
     description: string;
-    note?: string; // Optional Note inside confirmation card
+    note?: string;
     status: "pending" | "saved" | "cancelled";
   };
 }
 
-// Wrapper component to provide Suspense context for useSearchParams()
 export default function TransactionsPage() {
   return (
     <Suspense fallback={
@@ -65,101 +78,42 @@ export default function TransactionsPage() {
 }
 
 function TransactionsContent() {
+  const { user } = useAuth();
   const searchParams = useSearchParams();
   
-  // Set initial tab from query params ?tab=ai
   const initialTab = searchParams.get("tab") === "ai" ? "ai" : "history";
   const [activeTab, setActiveTab] = useState<"history" | "ai">(initialTab);
 
-  // --- HISTORY STATES (English with Notes) ---
-  const [transactions, setTransactions] = useState<Transaction[]>([
-    { id: "t1", title: "Highlands Coffee", amount: -55000, category: "Dining", wallet: "MoMo Wallet", time: "14:32", dateStr: "Today, Jul 03", type: "EXPENSE", note: "Meeting with client Nam" },
-    { id: "t2", title: "June Salary Inflow", amount: 18000000, category: "Income", wallet: "Techcombank", time: "09:00", dateStr: "Yesterday, Jul 02", type: "INCOME", note: "Base salary + performance bonus" },
-    { id: "t3", title: "Loan from Nam", amount: 2000000, category: "Loans", wallet: "Cash", time: "18:15", dateStr: "Jul 01", type: "DEBT_BORROWED", note: "For mechanical keyboard purchase" },
-    { id: "t4", title: "Uniqlo Clothing Shop", amount: -450000, category: "Shopping", wallet: "Credit Card", time: "20:10", dateStr: "Jun 29", type: "EXPENSE", note: "Summer t-shirts and jeans" },
-    { id: "t5", title: "Repaid Vy", amount: -500000, category: "Repayments", wallet: "MoMo Wallet", time: "11:30", dateStr: "Jun 28", type: "DEBT_REPAYMENT", note: "Settled lunch debt" },
-  ]);
+  // Data States from DB
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [wallets, setWallets] = useState<Wallet[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
 
   // Filters
-  const [filterWallet, setFilterWallet] = useState("All");
-  const [filterCategory, setFilterCategory] = useState("All");
+  const [filterWalletId, setFilterWalletId] = useState("All");
+  const [filterCategoryId, setFilterCategoryId] = useState("All");
   const [searchQuery, setSearchQuery] = useState("");
   const [showFilters, setShowFilters] = useState(false);
 
   // --- MANUAL TRANSACTION FORM STATES ---
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
-  const [formTitle, setFormTitle] = useState("");
+  const [formDescription, setFormDescription] = useState("");
   const [formAmount, setFormAmount] = useState("");
   const [formType, setFormType] = useState("EXPENSE");
-  const [formWallet, setFormWallet] = useState("Cash");
-  const [formCategory, setFormCategory] = useState("Dining");
+  const [formWalletId, setFormWalletId] = useState("");
+  const [formCategoryId, setFormCategoryId] = useState("");
   const [formNote, setFormNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const openCreateForm = () => {
-    setEditingTx(null);
-    setFormTitle("");
-    setFormAmount("");
-    setFormType("EXPENSE");
-    setFormWallet("Cash");
-    setFormCategory("Dining");
-    setFormNote("");
-    setIsFormOpen(true);
-  };
+  // --- CATEGORY MANAGEMENT STATES ---
+  const [isManageCategoriesOpen, setIsManageCategoriesOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategoryType, setNewCategoryType] = useState<"INCOME" | "EXPENSE">("EXPENSE");
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
 
-  const openEditForm = (tx: Transaction) => {
-    setEditingTx(tx);
-    setFormTitle(tx.title);
-    setFormAmount(Math.abs(tx.amount).toString());
-    setFormType(tx.type);
-    setFormWallet(tx.wallet);
-    setFormCategory(tx.category);
-    setFormNote(tx.note || "");
-    setIsFormOpen(true);
-  };
-
-  const handleSaveForm = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formTitle.trim() || !formAmount.trim()) return;
-
-    const amt = parseFloat(formAmount);
-    if (isNaN(amt)) return;
-
-    const signedAmt = formType === "EXPENSE" || formType === "DEBT_REPAYMENT" ? -amt : amt;
-
-    if (editingTx) {
-      // Editing Mode
-      setTransactions((prev) => 
-        prev.map((t) => 
-          t.id === editingTx.id 
-            ? { ...t, title: formTitle, amount: signedAmt, type: formType, wallet: formWallet, category: formCategory, note: formNote }
-            : t
-        )
-      );
-    } else {
-      // Creating Mode
-      const newTx: Transaction = {
-        id: `t-manual-${Date.now()}`,
-        title: formTitle,
-        amount: signedAmt,
-        category: formCategory,
-        wallet: formWallet,
-        time: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
-        dateStr: "Today, Jul 03",
-        type: formType,
-        note: formNote
-      };
-      setTransactions((prev) => [newTx, ...prev]);
-    }
-    setIsFormOpen(false);
-  };
-
-  const handleDeleteTx = (id: string) => {
-    setTransactions((prev) => prev.filter((t) => t.id !== id));
-    setIsFormOpen(false);
-  };
-
-  // --- AI ASSISTANT STATES (English) ---
+  // --- AI ASSISTANT STATES ---
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "m1",
@@ -172,16 +126,266 @@ function TransactionsContent() {
   const [isTyping, setIsTyping] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
+  // Load Initial Data
+  useEffect(() => {
+    if (user) {
+      fetchInitialData();
+    }
+  }, [user]);
+
   // Auto-scroll on new message
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
+  const fetchInitialData = async () => {
+    setLoading(true);
+    try {
+      // 1. Fetch Wallets
+      const { data: walletsData } = await supabase
+        .from("wallets")
+        .select("id, name")
+        .order("created_at", { ascending: true });
+      setWallets(walletsData || []);
+      if (walletsData && walletsData.length > 0) {
+        setFormWalletId(walletsData[0].id);
+      }
+
+      // 2. Fetch Categories
+      const { data: categoriesData } = await supabase
+        .from("categories")
+        .select("id, name, type")
+        .order("name", { ascending: true });
+      setCategories(categoriesData || []);
+      if (categoriesData && categoriesData.length > 0) {
+        setFormCategoryId(categoriesData[0].id);
+      }
+
+      // 3. Fetch Transactions
+      await fetchTransactions();
+    } catch (err) {
+      console.error("Error loading initial data:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchTransactions = async () => {
+    try {
+      const { data: txsData } = await supabase
+        .from("transactions")
+        .select(`
+          *,
+          wallets (name),
+          categories (name)
+        `)
+        .order("created_at", { ascending: false });
+
+      const formattedTxs = (txsData || []).map((tx: any) => ({
+        ...tx,
+        wallet_name: tx.wallets?.name || "Unknown Wallet",
+        category_name: tx.categories?.name || "Uncategorized",
+        dateStr: getGroupDateStr(tx.created_at)
+      }));
+      setTransactions(formattedTxs);
+    } catch (err) {
+      console.error("Error fetching transactions:", err);
+    }
+  };
+
+  const getGroupDateStr = (dateIso: string) => {
+    const date = new Date(dateIso);
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+
+    if (date.toDateString() === today.toDateString()) {
+      return "Today, " + date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    } else if (date.toDateString() === yesterday.toDateString()) {
+      return "Yesterday, " + date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    } else {
+      return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    }
+  };
+
   const formatCurrency = (val: number) => {
     return val.toLocaleString("en-US") + " VND";
   };
 
-  // --- MOCK CHAT AI PARSING MECHANISM ---
+  // --- MANUAL CRUD HANDLERS ---
+  const openCreateForm = () => {
+    setEditingTx(null);
+    setFormDescription("");
+    setFormAmount("");
+    setFormType("EXPENSE");
+    if (wallets.length > 0) setFormWalletId(wallets[0].id);
+    
+    // Default to first expense category
+    const expenseCat = categories.find(c => c.type === "EXPENSE");
+    if (expenseCat) setFormCategoryId(expenseCat.id);
+    else if (categories.length > 0) setFormCategoryId(categories[0].id);
+
+    setFormNote("");
+    setIsFormOpen(true);
+  };
+
+  const openEditForm = (tx: Transaction) => {
+    setEditingTx(tx);
+    setFormDescription(tx.description);
+    setFormAmount(Math.abs(tx.amount).toString());
+    setFormType(tx.type);
+    setFormWalletId(tx.wallet_id);
+    setFormCategoryId(tx.category_id);
+    setFormNote(tx.note || "");
+    setIsFormOpen(true);
+  };
+
+  const handleSaveForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formDescription.trim() || !formAmount.trim() || !user) return;
+
+    const amt = parseFloat(formAmount);
+    if (isNaN(amt) || amt < 0) return;
+
+    setSubmitting(true);
+    try {
+      const txData = {
+        description: formDescription.trim(),
+        amount: amt,
+        type: formType,
+        wallet_id: formWalletId,
+        category_id: formCategoryId || null,
+        note: formNote.trim() || null,
+        user_id: user.id,
+        status: "COMPLETED"
+      };
+
+      if (editingTx) {
+        // UPDATE
+        const { error } = await supabase
+          .from("transactions")
+          .update(txData)
+          .eq("id", editingTx.id);
+
+        if (error) throw error;
+      } else {
+        // INSERT
+        const { error } = await supabase
+          .from("transactions")
+          .insert(txData);
+
+        if (error) throw error;
+      }
+
+      setIsFormOpen(false);
+      fetchTransactions();
+    } catch (err) {
+      console.error("Error saving transaction:", err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDeleteTx = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this transaction?")) return;
+    
+    setSubmitting(true);
+    try {
+      const { error } = await supabase
+        .from("transactions")
+        .delete()
+        .eq("id", id);
+
+      if (error) throw error;
+      setIsFormOpen(false);
+      fetchTransactions();
+    } catch (err) {
+      console.error("Error deleting transaction:", err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // --- CATEGORY CRUD HANDLERS ---
+  const handleAddCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCategoryName.trim() || !user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from("categories")
+        .insert({
+          user_id: user.id,
+          name: newCategoryName.trim(),
+          type: newCategoryType
+        })
+        .select();
+
+      if (error) throw error;
+
+      setNewCategoryName("");
+      // Refetch categories
+      const { data: categoriesData } = await supabase
+        .from("categories")
+        .select("id, name, type")
+        .order("name", { ascending: true });
+      setCategories(categoriesData || []);
+    } catch (err) {
+      console.error("Error adding category:", err);
+    }
+  };
+
+  const handleUpdateCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCategory || !newCategoryName.trim()) return;
+
+    try {
+      const { error } = await supabase
+        .from("categories")
+        .update({
+          name: newCategoryName.trim(),
+          type: newCategoryType
+        })
+        .eq("id", editingCategory.id);
+
+      if (error) throw error;
+
+      setEditingCategory(null);
+      setNewCategoryName("");
+      // Refetch
+      const { data: categoriesData } = await supabase
+        .from("categories")
+        .select("id, name, type")
+        .order("name", { ascending: true });
+      setCategories(categoriesData || []);
+    } catch (err) {
+      console.error("Error updating category:", err);
+    }
+  };
+
+  const handleDeleteCategory = async (id: string) => {
+    if (!window.confirm("Deleting this category will set associated transactions' categories to Null. Continue?")) return;
+
+    try {
+      const { error } = await supabase
+        .from("categories")
+        .delete()
+        .eq("id", id);
+
+      if (error) throw error;
+
+      // Refetch
+      const { data: categoriesData } = await supabase
+        .from("categories")
+        .select("id, name, type")
+        .order("name", { ascending: true });
+      setCategories(categoriesData || []);
+    } catch (err) {
+      console.error("Error deleting category:", err);
+    }
+  };
+
+  // --- MOCK CHAT AI PARSING (Same logic, maps to DB on save) ---
   const handleSendMessage = () => {
     if (!chatInput.trim()) return;
 
@@ -197,40 +401,31 @@ function TransactionsContent() {
     setChatInput("");
     setIsTyping(true);
 
-    // Simulated AI NLP Processing
     setTimeout(() => {
       setIsTyping(false);
       let aiText = "I have analyzed your statement. Please confirm the transaction card details below to save it:";
       let amount = 50000;
-      let wallet = "MoMo Wallet";
-      let category = "Dining";
+      let walletName = wallets.length > 0 ? wallets[0].name : "Ví tiền mặt";
+      let categoryName = "Ăn uống";
       let type = "EXPENSE";
-      let title = "Dining expenditure";
+      let description = "Dining expenditure";
       let note = "";
 
-      // Parse Note / Memo
       if (currentInput.includes("for ")) {
         const parts = currentInput.split("for ");
-        if (parts.length > 1) {
-          note = parts[1].trim();
-        }
+        if (parts.length > 1) note = parts[1].trim();
       } else if (currentInput.includes("with ")) {
         const parts = currentInput.split("with ");
-        if (parts.length > 1) {
-          note = "With " + parts[1].trim();
-        }
+        if (parts.length > 1) note = "With " + parts[1].trim();
       }
 
-      // Parse keywords
       if (currentInput.includes("salary") || currentInput.includes("earned") || currentInput.includes("received") || currentInput.includes("income")) {
         type = "INCOME";
-        category = "Income";
-        title = "Salary Inflow";
+        categoryName = "Lương";
+        description = "Salary Inflow";
         amount = 10000000;
-        if (!note) note = ""; // default note to blank
       }
       
-      // Parse numbers (like 120k, 15m)
       const numberMatches = currentInput.match(/\d+(\s*(k|m|million|triệu|tr))?/g);
       if (numberMatches) {
         const rawNumStr = numberMatches[0];
@@ -244,32 +439,19 @@ function TransactionsContent() {
         }
       }
 
-      // Parse wallets
-      if (currentInput.includes("techcombank") || currentInput.includes("tcb") || currentInput.includes("bank")) {
-        wallet = "Techcombank";
-      } else if (currentInput.includes("cash") || currentInput.includes("wallet")) {
-        wallet = "Cash";
-      } else if (currentInput.includes("credit") || currentInput.includes("card")) {
-        wallet = "Credit Card";
+      // Check against current user wallets
+      const foundWallet = wallets.find(w => currentInput.includes(w.name.toLowerCase()));
+      if (foundWallet) {
+        walletName = foundWallet.name;
       }
 
-      // Parse categories
-      if (currentInput.includes("coffee") || currentInput.includes("cafe") || currentInput.includes("drink") || currentInput.includes("starbucks")) {
-        category = "Dining";
-        title = "Starbucks Coffee";
-      } else if (currentInput.includes("dinner") || currentInput.includes("lunch") || currentInput.includes("food") || currentInput.includes("eat")) {
-        category = "Dining";
-        title = "Food & Dining";
-      } else if (currentInput.includes("clothes") || currentInput.includes("shopping") || currentInput.includes("uniqlo") || currentInput.includes("bought")) {
-        category = "Shopping";
-        title = "Shopping Expense";
-      } else if (currentInput.includes("grab") || currentInput.includes("taxi") || currentInput.includes("uber") || currentInput.includes("ride")) {
-        category = "Transport";
-        title = "Grab Ride";
+      // Check against categories
+      const foundCategory = categories.find(c => currentInput.includes(c.name.toLowerCase()));
+      if (foundCategory) {
+        categoryName = foundCategory.name;
       }
 
       if (note) {
-        // Capitalize first letter of note
         note = note.charAt(0).toUpperCase() + note.slice(1);
       }
 
@@ -281,10 +463,10 @@ function TransactionsContent() {
         confirmationCard: {
           type,
           amount,
-          wallet,
-          category,
-          description: title,
-          note: note || undefined, // note is omitted if empty
+          wallet: walletName,
+          category: categoryName,
+          description,
+          note: note || undefined,
           status: "pending"
         }
       };
@@ -293,27 +475,33 @@ function TransactionsContent() {
     }, 1000);
   };
 
-  // --- SAVE OR DISMISS CONFIRMATION CARD ---
-  const handleConfirmCard = (msgId: string, action: "save" | "cancel") => {
+  const handleConfirmCard = async (msgId: string, action: "save" | "cancel") => {
+    if (!user) return;
+    
     setMessages((prev) => 
       prev.map((msg) => {
         if (msg.id === msgId && msg.confirmationCard) {
           const card = msg.confirmationCard;
           if (action === "save") {
-            const amt = card.type === "EXPENSE" ? -card.amount : card.amount;
-            const newTx: Transaction = {
-              id: `t-new-${Date.now()}`,
-              title: card.description,
-              amount: amt,
-              category: card.category,
-              wallet: card.wallet,
-              time: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
-              dateStr: "Today, Jul 03",
-              type: card.type,
-              note: card.note
-            };
+            // Find wallet id by name
+            const wId = wallets.find(w => w.name.toLowerCase() === card.wallet.toLowerCase())?.id || wallets[0]?.id;
+            // Find category id by name
+            const cId = categories.find(c => c.name.toLowerCase() === card.category.toLowerCase())?.id || categories[0]?.id;
 
-            setTransactions((oldTxs) => [newTx, ...oldTxs]);
+            // Trigger DB Save
+            supabase.from("transactions").insert({
+              user_id: user.id,
+              wallet_id: wId,
+              category_id: cId || null,
+              amount: card.amount,
+              type: card.type,
+              description: card.description,
+              note: card.note || null,
+              status: "COMPLETED"
+            }).then(({ error }) => {
+              if (error) console.error("Error saving AI transaction:", error);
+              else fetchTransactions();
+            });
             
             return {
               ...msg,
@@ -333,19 +521,16 @@ function TransactionsContent() {
     );
   };
 
-  // --- CUSTOM MARKDOWN PARSER FOR MESSAGES ---
+  // Markdown Parser
   const renderMessageText = (text: string) => {
     const lines = text.split("\n");
     return (
       <div className="space-y-1">
         {lines.map((line, idx) => {
           let content: React.ReactNode = line;
-          
-          // Check if line is a bullet point
           const isBullet = line.startsWith("* ") || line.startsWith("- ");
           const cleanLine = isBullet ? line.substring(2) : line;
 
-          // Parse bold text **bold**
           const boldParts = cleanLine.split(/\*\*([^*]+)\*\*/g);
           if (boldParts.length > 1) {
             content = boldParts.map((part, pIdx) => {
@@ -394,34 +579,36 @@ function TransactionsContent() {
     return text;
   };
 
-  // --- FILTER TRANSACTION LIST ---
+  // --- FILTERS LOGIC ---
   const filteredTransactions = transactions.filter((tx) => {
-    const matchesWallet = filterWallet === "All" || tx.wallet === filterWallet;
-    const matchesCategory = filterCategory === "All" || tx.category === filterCategory;
-    const matchesSearch = tx.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          tx.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          (tx.note && tx.note.toLowerCase().includes(searchQuery.toLowerCase()));
+    const matchesWallet = filterWalletId === "All" || tx.wallet_id === filterWalletId;
+    const matchesCategory = filterCategoryId === "All" || tx.category_id === filterCategoryId;
+    const matchesSearch = 
+      tx.description.toLowerCase().includes(searchQuery.toLowerCase()) || 
+      (tx.category_name && tx.category_name.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (tx.note && tx.note.toLowerCase().includes(searchQuery.toLowerCase()));
+    
     return matchesWallet && matchesCategory && matchesSearch;
   });
 
   // Group by Date string
   const groupedTransactions: { [key: string]: Transaction[] } = {};
   filteredTransactions.forEach((tx) => {
-    if (!groupedTransactions[tx.dateStr]) {
-      groupedTransactions[tx.dateStr] = [];
+    const groupKey = tx.dateStr || "Unknown Date";
+    if (!groupedTransactions[groupKey]) {
+      groupedTransactions[groupKey] = [];
     }
-    groupedTransactions[tx.dateStr].push(tx);
+    groupedTransactions[groupKey].push(tx);
   });
 
-  const getTxIcon = (category: string) => {
-    switch (category) {
-      case "Dining": return Coffee;
-      case "Income": return DollarSign;
-      case "Loans": return TrendingUp;
-      case "Shopping": return ShoppingBag;
-      case "Repayments": return UserCheck;
-      default: return Coffee;
-    }
+  const getTxIconComponent = (category: string) => {
+    const cat = category.toLowerCase();
+    if (cat.includes("dining") || cat.includes("ăn uống") || cat.includes("coffee") || cat.includes("cafe")) return Coffee;
+    if (cat.includes("income") || cat.includes("lương")) return DollarSign;
+    if (cat.includes("loans") || cat.includes("nợ")) return TrendingUp;
+    if (cat.includes("shopping") || cat.includes("mua sắm")) return ShoppingBag;
+    if (cat.includes("repayments") || cat.includes("trả nợ")) return UserCheck;
+    return Coffee;
   };
 
   return (
@@ -457,265 +644,279 @@ function TransactionsContent() {
 
       {/* 2. TAB CONTENT PANES */}
       <div className="flex-1 overflow-y-auto min-h-0 py-5">
-        
-        {/* --- TAB 1: HISTORY --- */}
-        {activeTab === "history" && (
-          <div className="space-y-4 max-w-2xl mx-auto">
-            
-            {/* Search Input, Filter Toggle & Manual Add Button */}
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <input
-                  type="text"
-                  placeholder="Search transactions..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-card border border-border rounded-xl py-2 pl-10 pr-4 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40"
-                />
-              </div>
-              <button
-                onClick={() => setShowFilters(!showFilters)}
-                className={`p-2 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
-                  showFilters 
-                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-500" 
-                    : "bg-card border-border text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <SlidersHorizontal className="h-4 w-4" />
-              </button>
-              <button
-                onClick={openCreateForm}
-                className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 rounded-xl text-xs font-bold shadow-md shadow-emerald-500/10 transition-all cursor-pointer shrink-0"
-              >
-                <Plus className="h-4 w-4 stroke-[2.5]" />
-                <span className="hidden sm:inline">Add</span>
-              </button>
-            </div>
-
-            {/* Expandable Filter Grid */}
-            {showFilters && (
-              <div className="p-4 rounded-2xl bg-card border border-border grid grid-cols-2 gap-3 animate-fade-in">
-                <div>
-                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1.5">Wallet Account</label>
-                  <div className="relative">
-                    <select
-                      value={filterWallet}
-                      onChange={(e) => setFilterWallet(e.target.value)}
-                      className="w-full bg-background border border-border rounded-lg p-2 text-xs text-foreground appearance-none focus:outline-none"
-                    >
-                      {WALLETS.map((w) => (
-                        <option key={w} value={w}>{w}</option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1.5">Category</label>
-                  <div className="relative">
-                    <select
-                      value={filterCategory}
-                      onChange={(e) => setFilterCategory(e.target.value)}
-                      className="w-full bg-background border border-border rounded-lg p-2 text-xs text-foreground appearance-none focus:outline-none"
-                    >
-                      {CATEGORIES.map((c) => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* List grouped by date */}
-            {Object.keys(groupedTransactions).length > 0 ? (
-              <div className="space-y-5">
-                {Object.keys(groupedTransactions).map((date) => (
-                  <div key={date} className="space-y-2">
-                    <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-1">{date}</h4>
-                    <div className="space-y-2">
-                      {groupedTransactions[date].map((tx) => {
-                        const Icon = getTxIcon(tx.category);
-                        const isExpense = tx.amount < 0 && tx.type !== "DEBT_REPAYMENT";
-                        const isRepayment = tx.type === "DEBT_REPAYMENT";
-
-                        return (
-                          <div 
-                            key={tx.id}
-                            onClick={() => openEditForm(tx)}
-                            className="flex items-center justify-between p-3.5 rounded-2xl bg-card border border-border hover:border-muted-foreground/35 hover:shadow-sm hover:scale-[1.005] active:scale-[0.995] transition-all cursor-pointer"
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className={`p-2.5 rounded-xl ${
-                                isExpense 
-                                  ? "bg-rose-500/10 text-rose-505" 
-                                  : isRepayment 
-                                    ? "bg-indigo-500/10 text-indigo-500"
-                                    : "bg-emerald-500/10 text-emerald-500"
-                              }`}>
-                                <Icon className="h-4 w-4" />
-                              </div>
-                              <div>
-                                <h5 className="text-xs font-semibold">{tx.title}</h5>
-                                <div className="flex items-center gap-1.5 mt-0.5 text-[9px] text-muted-foreground">
-                                  <span>{tx.time}</span>
-                                  <span>•</span>
-                                  <span>{tx.wallet}</span>
-                                </div>
-                                
-                                {/* TRANSACTION NOTE DISPLAY */}
-                                {tx.note && (
-                                  <p className="text-[9px] text-muted-foreground/80 italic mt-1 font-medium bg-accent/40 px-1.5 py-0.5 rounded inline-block">
-                                    Note: "{tx.note}"
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                            <div className="text-right">
-                              <span className={`text-xs font-bold font-heading ${
-                                tx.amount < 0 ? "text-rose-500" : "text-emerald-500"
-                              }`}>
-                                {tx.amount > 0 ? "+" : ""}{formatCurrency(tx.amount)}
-                              </span>
-                              <span className="text-[9px] text-muted-foreground block mt-0.5">{tx.category}</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="py-12 text-center">
-                <p className="text-xs text-muted-foreground">No matching transactions found.</p>
-              </div>
-            )}
+        {loading && transactions.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center py-12 text-xs text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin text-emerald-500 mb-2" />
+            <span>Loading transaction histories...</span>
           </div>
-        )}
-
-        {/* --- TAB 2: AI CHAT --- */}
-        {activeTab === "ai" && (
-          <div className="flex flex-col h-full space-y-4 max-w-2xl mx-auto">
-            
-            {/* Messages display */}
-            <div className="flex-1 space-y-4 min-h-[350px]">
-              {messages.map((msg) => {
-                const isAI = msg.sender === "ai";
-                return (
-                  <div 
-                    key={msg.id} 
-                    className={`flex flex-col ${isAI ? "items-start" : "items-end"} space-y-1`}
+        ) : (
+          <>
+            {/* --- TAB 1: HISTORY --- */}
+            {activeTab === "history" && (
+              <div className="space-y-4 max-w-2xl mx-auto">
+                
+                {/* Search Input, Filter Toggle & Manual Add Button */}
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <input
+                      type="text"
+                      placeholder="Search transactions..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full bg-card border border-border rounded-xl py-2 pl-10 pr-4 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40"
+                    />
+                  </div>
+                  <button
+                    onClick={() => setShowFilters(!showFilters)}
+                    className={`p-2 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
+                      showFilters 
+                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-500" 
+                        : "bg-card border-border text-muted-foreground hover:text-foreground"
+                    }`}
                   >
-                    <span className="text-[8px] text-muted-foreground font-medium px-2">{msg.time}</span>
-                    <div 
-                      className={`max-w-[85%] p-3.5 rounded-2xl text-xs leading-relaxed ${
-                        isAI 
-                          ? "bg-card border border-border text-foreground rounded-tl-sm" 
-                          : "bg-emerald-500 text-slate-950 font-semibold rounded-tr-sm shadow-sm"
-                      }`}
-                    >
-                      {isAI ? renderMessageText(msg.text) : msg.text}
+                    <SlidersHorizontal className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={openCreateForm}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 rounded-xl text-xs font-bold shadow-md shadow-emerald-500/10 transition-all cursor-pointer shrink-0"
+                  >
+                    <Plus className="h-4 w-4 stroke-[2.5]" />
+                    <span className="hidden sm:inline">Add</span>
+                  </button>
+                </div>
+
+                {/* Expandable Filter Grid */}
+                {showFilters && (
+                  <div className="p-4 rounded-2xl bg-card border border-border grid grid-cols-2 gap-3 animate-fade-in text-foreground">
+                    <div>
+                      <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1.5">Wallet Account</label>
+                      <div className="relative">
+                        <select
+                          value={filterWalletId}
+                          onChange={(e) => setFilterWalletId(e.target.value)}
+                          className="w-full bg-background border border-border rounded-lg p-2 text-xs text-foreground appearance-none focus:outline-none"
+                        >
+                          <option value="All">All Wallets</option>
+                          {wallets.map((w) => (
+                            <option key={w.id} value={w.id}>{w.name}</option>
+                          ))}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                      </div>
                     </div>
 
-                    {/* CONFIRMATION CARD */}
-                    {isAI && msg.confirmationCard && msg.confirmationCard.status === "pending" && (
-                      <div className="w-[85%] mt-2 rounded-2xl bg-gradient-to-b from-slate-900 to-slate-950 border-2 border-emerald-500/40 p-4 shadow-md space-y-4">
-                        <div className="flex items-center justify-between border-b border-border pb-2">
-                          <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider flex items-center gap-1">
-                            <Sparkles className="h-3 w-3" /> Confirm Transaction
-                          </span>
-                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
-                            msg.confirmationCard.type === "EXPENSE" ? "bg-rose-500/10 text-rose-500" : "bg-emerald-500/10 text-emerald-500"
-                          }`}>
-                            {msg.confirmationCard.type === "EXPENSE" ? "Expense" : "Income"}
-                          </span>
-                        </div>
+                    <div>
+                      <div className="flex justify-between items-center mb-1.5">
+                        <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category</label>
+                        <button 
+                          onClick={() => setIsManageCategoriesOpen(true)}
+                          className="text-[8px] text-emerald-500 hover:underline font-bold"
+                        >
+                          Manage
+                        </button>
+                      </div>
+                      <div className="relative">
+                        <select
+                          value={filterCategoryId}
+                          onChange={(e) => setFilterCategoryId(e.target.value)}
+                          className="w-full bg-background border border-border rounded-lg p-2 text-xs text-foreground appearance-none focus:outline-none"
+                        >
+                          <option value="All">All Categories</option>
+                          {categories.map((c) => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                      </div>
+                    </div>
+                  </div>
+                )}
 
-                        <div className="space-y-2 text-xs">
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">Description:</span>
-                            <span className="font-semibold text-foreground">{msg.confirmationCard.description}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">Amount:</span>
-                            <span className="font-bold text-foreground font-heading">{formatCurrency(msg.confirmationCard.amount)}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">Wallet Account:</span>
-                            <span className="font-medium text-emerald-600 dark:text-emerald-400">{msg.confirmationCard.wallet}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">Category:</span>
-                            <span className="font-medium">{msg.confirmationCard.category}</span>
-                          </div>
-                          
-                          {/* DYNAMIC NOTE FIELD INSIDE CARD */}
-                          {msg.confirmationCard.note && (
-                            <div className="flex justify-between border-t border-dashed border-border pt-1.5 mt-1.5">
-                              <span className="text-muted-foreground">Note:</span>
-                              <span className="font-medium italic text-slate-700 dark:text-slate-350">"{msg.confirmationCard.note}"</span>
-                            </div>
-                          )}
-                        </div>
+                {/* List grouped by date */}
+                {Object.keys(groupedTransactions).length > 0 ? (
+                  <div className="space-y-5">
+                    {Object.keys(groupedTransactions).map((date) => (
+                      <div key={date} className="space-y-2">
+                        <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-1">{date}</h4>
+                        <div className="space-y-2">
+                          {groupedTransactions[date].map((tx) => {
+                            const Icon = getTxIconComponent(tx.category_name || "");
+                            const isExpense = tx.type === "EXPENSE" || tx.type === "DEBT_LENT" || tx.type === "TRANSFER";
+                            const amtVal = Number(tx.amount);
 
-                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border">
-                          <button
-                            onClick={() => handleConfirmCard(msg.id, "cancel")}
-                            className="flex items-center justify-center gap-1.5 py-2 rounded-xl bg-card border border-border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors cursor-pointer text-[11px] font-semibold"
-                          >
-                            <X className="h-3.5 w-3.5" /> Cancel
-                          </button>
-                          <button
-                            onClick={() => handleConfirmCard(msg.id, "save")}
-                            className="flex items-center justify-center gap-1.5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-[11px]"
-                          >
-                            <Check className="h-3.5 w-3.5" /> Save
-                          </button>
+                            return (
+                              <div 
+                                key={tx.id}
+                                onClick={() => openEditForm(tx)}
+                                className="flex items-center justify-between p-3.5 rounded-2xl bg-card border border-border hover:border-muted-foreground/35 hover:shadow-sm hover:scale-[1.005] active:scale-[0.995] transition-all cursor-pointer text-foreground"
+                              >
+                                <div className="flex items-center gap-3">
+                                  <div className={`p-2.5 rounded-xl ${
+                                    isExpense 
+                                      ? "bg-rose-500/10 text-rose-550" 
+                                      : "bg-emerald-500/10 text-emerald-500"
+                                  }`}>
+                                    <Icon className="h-4 w-4" />
+                                  </div>
+                                  <div>
+                                    <h5 className="text-xs font-semibold">{tx.description}</h5>
+                                    <div className="flex items-center gap-1.5 mt-0.5 text-[9px] text-muted-foreground">
+                                      <span>{new Date(tx.created_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}</span>
+                                      <span>•</span>
+                                      <span>{tx.wallet_name}</span>
+                                    </div>
+                                    
+                                    {tx.note && (
+                                      <p className="text-[9px] text-muted-foreground/80 italic mt-1 font-medium bg-accent/40 px-1.5 py-0.5 rounded inline-block">
+                                        Note: "{tx.note}"
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="text-right">
+                                  <span className={`text-xs font-bold font-heading ${
+                                    isExpense ? "text-rose-500" : "text-emerald-500"
+                                  }`}>
+                                    {isExpense ? "-" : "+"}{formatCurrency(amtVal)}
+                                  </span>
+                                  <span className="text-[9px] text-muted-foreground block mt-0.5">{tx.category_name}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
-                    )}
+                    ))}
                   </div>
-                );
-              })}
+                ) : (
+                  <div className="py-12 text-center">
+                    <p className="text-xs text-muted-foreground">No matching transactions found.</p>
+                  </div>
+                )}
+              </div>
+            )}
 
-              {/* AI Typing Indicator */}
-              {isTyping && (
-                <div className="flex flex-col items-start space-y-1">
-                  <span className="text-[8px] text-muted-foreground font-medium px-2">Analyzing</span>
-                  <div className="bg-card border border-border py-2.5 px-4 rounded-2xl rounded-tl-sm text-xs flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" />
-                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.2s]" />
-                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.4s]" />
-                  </div>
+            {/* --- TAB 2: AI CHAT --- */}
+            {activeTab === "ai" && (
+              <div className="flex flex-col h-full space-y-4 max-w-2xl mx-auto">
+                
+                {/* Messages display */}
+                <div className="flex-1 space-y-4 min-h-[350px]">
+                  {messages.map((msg) => {
+                    const isAI = msg.sender === "ai";
+                    return (
+                      <div 
+                        key={msg.id} 
+                        className={`flex flex-col ${isAI ? "items-start" : "items-end"} space-y-1`}
+                      >
+                        <span className="text-[8px] text-muted-foreground font-medium px-2">{msg.time}</span>
+                        <div 
+                          className={`max-w-[85%] p-3.5 rounded-2xl text-xs leading-relaxed ${
+                            isAI 
+                              ? "bg-card border border-border text-foreground rounded-tl-sm" 
+                              : "bg-emerald-500 text-slate-950 font-semibold rounded-tr-sm shadow-sm"
+                          }`}
+                        >
+                          {isAI ? renderMessageText(msg.text) : msg.text}
+                        </div>
+
+                        {/* CONFIRMATION CARD */}
+                        {isAI && msg.confirmationCard && msg.confirmationCard.status === "pending" && (
+                          <div className="w-[85%] mt-2 rounded-2xl bg-gradient-to-b from-slate-900 to-slate-950 border-2 border-emerald-500/40 p-4 shadow-md space-y-4">
+                            <div className="flex items-center justify-between border-b border-border pb-2">
+                              <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+                                <Sparkles className="h-3 w-3" /> Confirm Transaction
+                              </span>
+                              <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
+                                msg.confirmationCard.type === "EXPENSE" ? "bg-rose-500/10 text-rose-500" : "bg-emerald-500/10 text-emerald-500"
+                              }`}>
+                                {msg.confirmationCard.type === "EXPENSE" ? "Expense" : "Income"}
+                              </span>
+                            </div>
+
+                            <div className="space-y-2 text-xs">
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Description:</span>
+                                <span className="font-semibold text-foreground">{msg.confirmationCard.description}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Amount:</span>
+                                <span className="font-bold text-foreground font-heading">{formatCurrency(msg.confirmationCard.amount)}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Wallet Account:</span>
+                                <span className="font-medium text-emerald-600 dark:text-emerald-400">{msg.confirmationCard.wallet}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Category:</span>
+                                <span className="font-medium">{msg.confirmationCard.category}</span>
+                              </div>
+                              
+                              {msg.confirmationCard.note && (
+                                <div className="flex justify-between border-t border-dashed border-border pt-1.5 mt-1.5">
+                                  <span className="text-muted-foreground">Note:</span>
+                                  <span className="font-medium italic text-slate-700 dark:text-slate-300">"{msg.confirmationCard.note}"</span>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border">
+                              <button
+                                onClick={() => handleConfirmCard(msg.id, "cancel")}
+                                className="flex items-center justify-center gap-1.5 py-2 rounded-xl bg-card border border-border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors cursor-pointer text-[11px] font-semibold"
+                              >
+                                <X className="h-3.5 w-3.5" /> Cancel
+                              </button>
+                              <button
+                                onClick={() => handleConfirmCard(msg.id, "save")}
+                                className="flex items-center justify-center gap-1.5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-[11px]"
+                              >
+                                <Check className="h-3.5 w-3.5" /> Save
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* AI Typing Indicator */}
+                  {isTyping && (
+                    <div className="flex flex-col items-start space-y-1">
+                      <span className="text-[8px] text-muted-foreground font-medium px-2">Analyzing</span>
+                      <div className="bg-card border border-border py-2.5 px-4 rounded-2xl rounded-tl-sm text-xs flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.2s]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.4s]" />
+                      </div>
+                    </div>
+                  )}
+
+                  <div ref={chatBottomRef} />
                 </div>
-              )}
 
-              <div ref={chatBottomRef} />
-            </div>
+                {/* Chat Input Box */}
+                <div className="border-t border-border pt-3 flex gap-2 items-center bg-background sticky bottom-0 z-20">
+                  <input
+                    type="text"
+                    placeholder="Type a transaction... (e.g. coffee 55k momo for client meeting)"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                    className="flex-1 bg-card border border-border rounded-2xl py-3 px-4 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40"
+                  />
+                  <button
+                    onClick={handleSendMessage}
+                    className="h-10 w-10 shrink-0 rounded-2xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 flex items-center justify-center transition-all shadow-md shadow-emerald-500/10 cursor-pointer"
+                  >
+                    <Send className="h-4 w-4 stroke-[2.5]" />
+                  </button>
+                </div>
 
-            {/* Chat Input Box */}
-            <div className="border-t border-border pt-3 flex gap-2 items-center bg-background sticky bottom-0 z-20">
-              <input
-                type="text"
-                placeholder="Type a transaction... (e.g. coffee 55k momo for client meeting)"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                className="flex-1 bg-card border border-border rounded-2xl py-3 px-4 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40"
-              />
-              <button
-                onClick={handleSendMessage}
-                className="h-10 w-10 shrink-0 rounded-2xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 flex items-center justify-center transition-all shadow-md shadow-emerald-500/10 cursor-pointer"
-              >
-                <Send className="h-4 w-4 stroke-[2.5]" />
-              </button>
-            </div>
-
-          </div>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -724,7 +925,7 @@ function TransactionsContent() {
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
           <form 
             onSubmit={handleSaveForm}
-            className="w-full max-w-md bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground"
+            className="w-full max-w-md bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground font-sans"
           >
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-3 border-b border-border">
@@ -746,8 +947,8 @@ function TransactionsContent() {
               <input
                 type="text"
                 required
-                value={formTitle}
-                onChange={(e) => setFormTitle(e.target.value)}
+                value={formDescription}
+                onChange={(e) => setFormDescription(e.target.value)}
                 placeholder="e.g. Highlands Coffee, Uber Ride"
                 className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
               />
@@ -773,11 +974,16 @@ function TransactionsContent() {
                   <select
                     value={formType}
                     onChange={(e) => {
-                      setFormType(e.target.value);
-                      if (e.target.value === "INCOME") setFormCategory("Income");
-                      else if (e.target.value === "DEBT_BORROWED" || e.target.value === "DEBT_LENT") setFormCategory("Loans");
-                      else if (e.target.value === "DEBT_REPAYMENT") setFormCategory("Repayments");
-                      else setFormCategory("Dining");
+                      const newType = e.target.value;
+                      setFormType(newType);
+                      // Update category recommendation based on type
+                      if (newType === "INCOME") {
+                        const firstInc = categories.find(c => c.type === "INCOME");
+                        if (firstInc) setFormCategoryId(firstInc.id);
+                      } else {
+                        const firstExp = categories.find(c => c.type === "EXPENSE");
+                        if (firstExp) setFormCategoryId(firstExp.id);
+                      }
                     }}
                     className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none"
                   >
@@ -798,12 +1004,12 @@ function TransactionsContent() {
                 <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Account</label>
                 <div className="relative">
                   <select
-                    value={formWallet}
-                    onChange={(e) => setFormWallet(e.target.value)}
+                    value={formWalletId}
+                    onChange={(e) => setFormWalletId(e.target.value)}
                     className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none"
                   >
-                    {WALLETS.slice(1).map((w) => (
-                      <option key={w} value={w}>{w}</option>
+                    {wallets.map((w) => (
+                      <option key={w.id} value={w.id}>{w.name}</option>
                     ))}
                   </select>
                   <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
@@ -811,27 +1017,32 @@ function TransactionsContent() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category</label>
+                <div className="flex justify-between items-center mb-0.5">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category</label>
+                  <button
+                    type="button"
+                    onClick={() => setIsManageCategoriesOpen(true)}
+                    className="text-[8px] text-emerald-500 hover:underline font-bold"
+                  >
+                    Manage
+                  </button>
+                </div>
                 <div className="relative">
                   <select
-                    value={formCategory}
-                    onChange={(e) => setFormCategory(e.target.value)}
+                    value={formCategoryId}
+                    onChange={(e) => setFormCategoryId(e.target.value)}
                     className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none"
                   >
-                    {formType === "INCOME" ? (
-                      <option value="Income">Income</option>
-                    ) : formType === "DEBT_BORROWED" || formType === "DEBT_LENT" ? (
-                      <option value="Loans">Loans</option>
-                    ) : formType === "DEBT_REPAYMENT" ? (
-                      <option value="Repayments">Repayments</option>
-                    ) : (
-                      <>
-                        <option value="Dining">Dining</option>
-                        <option value="Shopping">Shopping</option>
-                        <option value="Transport">Transport</option>
-                        <option value="Housing">Housing</option>
-                      </>
-                    )}
+                    {categories
+                      .filter((c) => {
+                        // Filter categories by matching type
+                        if (formType === "INCOME") return c.type === "INCOME";
+                        return c.type === "EXPENSE"; // debts and others maps to expense by default for sorting
+                      })
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    <option value="">None / Uncategorized</option>
                   </select>
                   <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
                 </div>
@@ -856,7 +1067,8 @@ function TransactionsContent() {
                 <button
                   type="button"
                   onClick={() => handleDeleteTx(editingTx.id)}
-                  className="flex-1 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold transition-colors cursor-pointer text-xs text-center border border-rose-500/20"
+                  disabled={submitting}
+                  className="flex-1 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold transition-colors cursor-pointer text-xs text-center border border-rose-500/20 flex items-center justify-center"
                 >
                   Delete
                 </button>
@@ -870,12 +1082,125 @@ function TransactionsContent() {
               </button>
               <button
                 type="submit"
-                className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-xs text-center"
+                disabled={submitting}
+                className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-xs text-center flex items-center justify-center"
               >
-                Save
+                {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* --- CATEGORY MANAGEMENT MODAL --- */}
+      {isManageCategoriesOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+          <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[80%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
+            <div className="flex items-center justify-between pb-3 border-b border-border">
+              <h3 className="text-sm font-bold font-heading">Manage Categories</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsManageCategoriesOpen(false);
+                  setEditingCategory(null);
+                  setNewCategoryName("");
+                }}
+                className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Form to Add/Edit Category */}
+            <form 
+              onSubmit={editingCategory ? handleUpdateCategory : handleAddCategory}
+              className="p-4 bg-background border border-border rounded-2xl grid grid-cols-1 sm:grid-cols-3 gap-3 items-end"
+            >
+              <div className="space-y-1 sm:col-span-1.5">
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category Name</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Health, Coffee"
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                  className="w-full bg-card border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Type</label>
+                <div className="relative">
+                  <select
+                    value={newCategoryType}
+                    onChange={(e) => setNewCategoryType(e.target.value as "INCOME" | "EXPENSE")}
+                    className="w-full bg-card border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none"
+                  >
+                    <option value="EXPENSE">Expense</option>
+                    <option value="INCOME">Income</option>
+                  </select>
+                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="py-2.5 rounded-xl bg-emerald-500 text-slate-950 hover:bg-emerald-400 font-bold text-xs cursor-pointer flex items-center justify-center"
+              >
+                {editingCategory ? "Update" : "Add Category"}
+              </button>
+            </form>
+
+            {/* List Categories */}
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {categories.map((c) => (
+                <div 
+                  key={c.id} 
+                  className="flex items-center justify-between p-3 rounded-xl bg-background border border-border"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold">{c.name}</span>
+                    <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
+                      c.type === "EXPENSE" ? "bg-rose-500/10 text-rose-550" : "bg-emerald-500/10 text-emerald-500"
+                    }`}>
+                      {c.type === "EXPENSE" ? "Expense" : "Income"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => {
+                        setEditingCategory(c);
+                        setNewCategoryName(c.name);
+                        setNewCategoryType(c.type);
+                      }}
+                      className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                    >
+                      <Edit2 className="h-3 w-3" />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteCategory(c.id)}
+                      className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-500/10 transition-colors"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="pt-3 border-t border-border flex justify-end">
+              <button
+                onClick={() => {
+                  setIsManageCategoriesOpen(false);
+                  setEditingCategory(null);
+                  setNewCategoryName("");
+                }}
+                className="px-4 py-2 rounded-xl bg-accent text-xs font-semibold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
