@@ -1,20 +1,20 @@
 import type { Metadata } from "next";
-import { Inter, Outfit } from "next/font/google";
+import { Plus_Jakarta_Sans, Lexend } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({
+const plusJakartaSans = Plus_Jakarta_Sans({
   variable: "--font-inter",
   subsets: ["latin"],
 });
 
-const outfit = Outfit({
+const lexend = Lexend({
   variable: "--font-outfit",
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "Budger - Quản lý tài chính cá nhân thông minh",
-  description: "Trợ lý tài chính cá nhân thông minh tích hợp AI",
+  title: "Budger - Personal Finance AI Assistant",
+  description: "Smart personal finance tracker powered by AI",
 };
 
 export default function RootLayout({
@@ -24,10 +24,29 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="vi"
-      className={`${inter.variable} ${outfit.variable} h-full antialiased`}
+      lang="en"
+      className={`${plusJakartaSans.variable} ${lexend.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              try {
+                if (localStorage.theme === 'light') {
+                  document.documentElement.classList.remove('dark');
+                } else {
+                  document.documentElement.classList.add('dark');
+                  localStorage.setItem('theme', 'dark');
+                }
+              } catch (_) {}
+            `,
+          }}
+        />
+      </head>
+      <body className="min-h-full flex flex-col bg-background text-foreground transition-colors duration-200">
+        {children}
+      </body>
     </html>
   );
 }
+
