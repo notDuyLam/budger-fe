@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   Calendar, 
   ArrowUpRight, 
@@ -10,36 +10,57 @@ import {
   ShoppingBag, 
   Home, 
   RefreshCw,
-  Sliders
+  Sliders,
+  Loader2
 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/components/shared/AuthProvider";
 
-// Mock data for categories (English)
-const MOCK_CATEGORIES = [
-  { id: "cat1", name: "Dining", amount: 2025000, percentage: 45, color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-500", stroke: "#10b981", icon: Coffee },
-  { id: "cat2", name: "Shopping", amount: 1350000, percentage: 30, color: "text-indigo-500 dark:text-indigo-400", bg: "bg-indigo-500", stroke: "#6366f1", icon: ShoppingBag },
-  { id: "cat3", name: "Transport", amount: 675000, percentage: 15, color: "text-amber-500 dark:text-amber-400", bg: "bg-amber-500", stroke: "#f59e0b", icon: Sliders },
-  { id: "cat4", name: "Housing", amount: 450000, percentage: 10, color: "text-rose-500 dark:text-rose-400", bg: "bg-rose-500", stroke: "#f43f5e", icon: Home },
-];
-
-// Mock Transactions corresponding to categories (with Notes)
-const MOCK_ANALYTICS_TRANSACTIONS = [
-  { id: "at1", title: "Highlands Coffee", amount: -55000, category: "Dining", time: "Today, 14:32", icon: Coffee, note: "Meeting with client Nam" },
-  { id: "at2", title: "Beef Noodle Lunch", amount: -45000, category: "Dining", time: "Today, 12:15", icon: Coffee, note: "Lunch with developers" },
-  { id: "at3", title: "Haidilao Hotpot Dinner", amount: -850000, category: "Dining", time: "Yesterday, 19:30", icon: Coffee, note: "Family weekend gathering" },
-  { id: "at4", title: "Uniqlo T-shirt Shop", amount: -450000, category: "Shopping", time: "Jun 29, 20:10", icon: ShoppingBag, note: "Summer t-shirts and jeans" },
-  { id: "at5", title: "Sneaker Shoes Shop", amount: -900000, category: "Shopping", time: "Jun 25, 15:40", icon: ShoppingBag, note: "Gifts for brother" },
-  { id: "at6", title: "Grab Bike Ride", amount: -35000, category: "Transport", time: "Jun 28, 08:20", icon: Sliders, note: "Go to client office" },
-  { id: "at7", title: "Grab Car Ride", amount: -240000, category: "Transport", time: "Jun 24, 17:30", icon: Sliders, note: "Go to airport" },
-  { id: "at8", title: "Internet Subscription", amount: -450000, category: "Housing", time: "Jul 01, 10:00", icon: Home, note: "July home internet payment" },
-];
+interface TransactionItem {
+  id: string;
+  title: string;
+  amount: number;
+  category: string;
+  time: string;
+  icon: React.ComponentType<any>;
+  note?: string;
+}
 
 export default function AnalyticsPage() {
+  const { user } = useAuth();
+  const [transactions, setTransactions] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<"this_week" | "this_month" | "last_month">("this_month");
   const [selectedCategoryName, setSelectedCategoryName] = useState<string | null>(null);
 
-  // Totals
-  const totalExpense = MOCK_CATEGORIES.reduce((sum, c) => sum + c.amount, 0);
-  const totalIncome = 18000000;
+  // Fetch transactions of type INCOME & EXPENSE
+  const fetchAnalyticsData = async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("transactions")
+        .select(`
+          *,
+          categories (name)
+        `)
+        .in("type", ["INCOME", "EXPENSE"])
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+      setTransactions(data || []);
+    } catch (err) {
+      console.error("Error loading analytics data:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user) {
+      fetchAnalyticsData();
+    }
+  }, [user]);
 
   const formatCurrency = (val: number) => {
     return val.toLocaleString("en-US") + " VND";
@@ -51,10 +72,198 @@ export default function AnalyticsPage() {
     return "Last Month";
   };
 
-  // Filter transactions
-  const filteredTransactions = selectedCategoryName
-    ? MOCK_ANALYTICS_TRANSACTIONS.filter((t) => t.category === selectedCategoryName)
-    : MOCK_ANALYTICS_TRANSACTIONS;
+  // Helper to determine start and end dates for the selected period
+  const getPeriodRange = (p: "this_week" | "this_month" | "last_month") => {
+    const now = new Date();
+    let start = new Date();
+    let end = new Date();
+
+    if (p === "this_week") {
+      // Current calendar week (Monday 00:00 to now)
+      const day = now.getDay();
+      const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+      start = new Date(now.setDate(diff));
+      start.setHours(0, 0, 0, 0);
+      end = new Date(); // now
+    } else if (p === "this_month") {
+      start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+      end = now;
+    } else if (p === "last_month") {
+      start = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
+      end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    }
+
+    return { start, end };
+  };
+
+  const getCategoryStyles = (name: string, index: number) => {
+    const lowercaseName = name.toLowerCase();
+    
+    if (lowercaseName.includes("dining") || lowercaseName.includes("ăn uống") || lowercaseName.includes("coffee") || lowercaseName.includes("cafe")) {
+      return { color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-500", stroke: "#10b981", icon: Coffee };
+    }
+    if (lowercaseName.includes("shopping") || lowercaseName.includes("mua sắm")) {
+      return { color: "text-indigo-500 dark:text-indigo-400", bg: "bg-indigo-500", stroke: "#6366f1", icon: ShoppingBag };
+    }
+    if (lowercaseName.includes("transport") || lowercaseName.includes("di chuyển") || lowercaseName.includes("xe") || lowercaseName.includes("grab")) {
+      return { color: "text-amber-500 dark:text-amber-400", bg: "bg-amber-500", stroke: "#f59e0b", icon: Sliders };
+    }
+    if (lowercaseName.includes("housing") || lowercaseName.includes("tiền nhà") || lowercaseName.includes("rent") || lowercaseName.includes("điện nước")) {
+      return { color: "text-rose-500 dark:text-rose-400", bg: "bg-rose-500", stroke: "#f43f5e", icon: Home };
+    }
+    
+    const fallbackThemes = [
+      { color: "text-teal-500 dark:text-teal-400", bg: "bg-teal-500", stroke: "#14b8a6", icon: Sliders },
+      { color: "text-cyan-500 dark:text-cyan-400", bg: "bg-cyan-500", stroke: "#06b6d4", icon: Sliders },
+      { color: "text-sky-500 dark:text-sky-400", bg: "bg-sky-500", stroke: "#0ea5e9", icon: Sliders },
+      { color: "text-purple-500 dark:text-purple-400", bg: "bg-purple-500", stroke: "#a855f7", icon: Sliders },
+      { color: "text-fuchsia-500 dark:text-fuchsia-400", bg: "bg-fuchsia-500", stroke: "#d946ef", icon: Sliders },
+      { color: "text-orange-500 dark:text-orange-400", bg: "bg-orange-500", stroke: "#f97316", icon: Sliders },
+    ];
+    
+    return fallbackThemes[index % fallbackThemes.length];
+  };
+
+  const getTxTimeStr = (dateIso: string) => {
+    const date = new Date(dateIso);
+    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ", " + date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  };
+
+  // Filter data by selected period
+  const { start, end } = getPeriodRange(period);
+  const periodTxs = transactions.filter((tx) => {
+    const txDate = new Date(tx.created_at);
+    return txDate >= start && txDate <= end;
+  });
+
+  // Calculate Aggregates
+  const totalIncome = periodTxs
+    .filter((t) => t.type === "INCOME")
+    .reduce((sum, t) => sum + Number(t.amount), 0);
+
+  const totalExpense = periodTxs
+    .filter((t) => t.type === "EXPENSE")
+    .reduce((sum, t) => sum + Number(t.amount), 0);
+
+  // Group Expenses by Category
+  const categoryMap: { [name: string]: number } = {};
+  periodTxs
+    .filter((t) => t.type === "EXPENSE")
+    .forEach((tx) => {
+      const catName = tx.categories?.name || "Uncategorized";
+      categoryMap[catName] = (categoryMap[catName] || 0) + Number(tx.amount);
+    });
+
+  // Transform Category Map to Display format
+  const categoriesList = Object.keys(categoryMap).map((name, idx) => {
+    const amount = categoryMap[name];
+    const percentage = totalExpense > 0 ? Math.round((amount / totalExpense) * 100) : 0;
+    const styles = getCategoryStyles(name, idx);
+    return {
+      id: `cat-${idx}`,
+      name,
+      amount,
+      percentage,
+      ...styles
+    };
+  }).sort((a, b) => b.amount - a.amount);
+
+  // Filtered transactions for the detail list at bottom
+  const rawFilteredTransactions = periodTxs.filter((t) => t.type === "EXPENSE");
+  const filteredDetailedTransactions = selectedCategoryName
+    ? rawFilteredTransactions.filter((t) => (t.categories?.name || "Uncategorized") === selectedCategoryName)
+    : rawFilteredTransactions;
+
+  const detailedTransactionsList = filteredDetailedTransactions.map((tx, idx) => {
+    const catName = tx.categories?.name || "Uncategorized";
+    const styles = getCategoryStyles(catName, idx);
+    return {
+      id: tx.id,
+      title: tx.description || "Expense",
+      amount: Number(tx.amount),
+      category: catName,
+      time: getTxTimeStr(tx.created_at),
+      icon: styles.icon,
+      note: tx.note
+    };
+  });
+
+  // Calculate Bar Chart Data (Daily for this_week, Weekly for this_month/last_month)
+  const getWeeklyBars = () => {
+    const barsList: { label: string; income: number; expense: number }[] = [];
+    const now = new Date();
+    const day = now.getDay();
+    const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+    const startOfCurrentWeek = new Date(now.setDate(diff));
+    
+    const dayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(startOfCurrentWeek);
+      d.setDate(startOfCurrentWeek.getDate() + i);
+      d.setHours(0, 0, 0, 0);
+      const nextD = new Date(d);
+      nextD.setDate(d.getDate() + 1);
+
+      const dayTxs = periodTxs.filter(tx => {
+        const txDate = new Date(tx.created_at);
+        return txDate >= d && txDate < nextD;
+      });
+
+      const inc = dayTxs.filter(t => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
+      const exp = dayTxs.filter(t => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
+
+      barsList.push({ label: dayLabels[i], income: inc, expense: exp });
+    }
+    return barsList;
+  };
+
+  const getMonthlyBars = (isLastMonth: boolean) => {
+    const barsList: { label: string; income: number; expense: number }[] = [];
+    const now = new Date();
+    const targetYear = isLastMonth ? (now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()) : now.getFullYear();
+    const targetMonth = isLastMonth ? (now.getMonth() === 0 ? 11 : now.getMonth() - 1) : now.getMonth();
+
+    const weekRanges = [
+      { label: "W1", startDay: 1, endDay: 7 },
+      { label: "W2", startDay: 8, endDay: 14 },
+      { label: "W3", startDay: 15, endDay: 21 },
+      { label: "W4", startDay: 22, endDay: new Date(targetYear, targetMonth + 1, 0).getDate() }
+    ];
+
+    weekRanges.forEach(range => {
+      const wStart = new Date(targetYear, targetMonth, range.startDay, 0, 0, 0, 0);
+      const wEnd = new Date(targetYear, targetMonth, range.endDay, 23, 59, 59, 999);
+
+      const rangeTxs = periodTxs.filter(tx => {
+        const txDate = new Date(tx.created_at);
+        return txDate >= wStart && txDate <= wEnd;
+      });
+
+      const inc = rangeTxs.filter(t => t.type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
+      const exp = rangeTxs.filter(t => t.type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
+
+      barsList.push({ label: range.label, income: inc, expense: exp });
+    });
+
+    return barsList;
+  };
+
+  const bars = period === "this_week" ? getWeeklyBars() : getMonthlyBars(period === "last_month");
+  
+  const maxBarValue = Math.max(
+    ...bars.map(b => b.income),
+    ...bars.map(b => b.expense),
+    1
+  );
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center py-20 text-xs text-muted-foreground">
+        <Loader2 className="h-6 w-6 animate-spin text-emerald-500 mb-2" />
+        <span>Loading analytics information...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 space-y-6 relative text-foreground">
@@ -72,17 +281,20 @@ export default function AnalyticsPage() {
             value={period}
             onChange={(e) => {
               setPeriod(e.target.value as any);
-              setSelectedCategoryName(null); // Reset filter
+              setSelectedCategoryName(null);
             }}
             className="absolute inset-0 opacity-0 cursor-pointer"
           >
             <option value="this_week">This Week</option>
-            <option value="this_month">This Month (Jul 2026)</option>
-            <option value="last_month">Last Month (Jun 2026)</option>
+            <option value="this_month">This Month</option>
+            <option value="last_month">Last Month</option>
           </select>
         </div>
 
-        <button className="p-2 rounded-xl bg-card border border-border text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
+        <button 
+          onClick={fetchAnalyticsData}
+          className="p-2 rounded-xl bg-card border border-border text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+        >
           <RefreshCw className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -114,7 +326,7 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
-      {/* 3. CHARTS GRID (PIE & BAR SIDE BY SIDE ON DESKTOP) */}
+      {/* 3. CHARTS GRID */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         
         {/* PIE DONUT CHART CARD */}
@@ -126,66 +338,39 @@ export default function AnalyticsPage() {
 
           <div className="flex justify-center items-center py-2 relative">
             <svg width="160" height="160" viewBox="0 0 42 42" className="transform -rotate-90 select-none">
-              {/* Background circle (theme responsive) */}
+              {/* Background circle */}
               <circle cx="21" cy="21" r="15.915" fill="transparent" stroke="currentColor" strokeWidth="4.5" className="text-slate-100 dark:text-slate-800/80" />
               
-              {/* Donut chart segments */}
-              {/* Dining (45%) */}
-              <circle
-                cx="21"
-                cy="21"
-                r="15.915"
-                fill="transparent"
-                stroke="#10b981"
-                strokeWidth="4.8"
-                strokeDasharray="45 55"
-                strokeDashoffset="100"
-                className="cursor-pointer transition-all duration-300 hover:stroke-[5.5]"
-                onClick={() => setSelectedCategoryName(selectedCategoryName === "Dining" ? null : "Dining")}
-                opacity={selectedCategoryName && selectedCategoryName !== "Dining" ? 0.3 : 1}
-              />
-              {/* Shopping (30%) */}
-              <circle
-                cx="21"
-                cy="21"
-                r="15.915"
-                fill="transparent"
-                stroke="#6366f1"
-                strokeWidth="4.8"
-                strokeDasharray="30 70"
-                strokeDashoffset="55"
-                className="cursor-pointer transition-all duration-300 hover:stroke-[5.5]"
-                onClick={() => setSelectedCategoryName(selectedCategoryName === "Shopping" ? null : "Shopping")}
-                opacity={selectedCategoryName && selectedCategoryName !== "Shopping" ? 0.3 : 1}
-              />
-              {/* Transport (15%) */}
-              <circle
-                cx="21"
-                cy="21"
-                r="15.915"
-                fill="transparent"
-                stroke="#f59e0b"
-                strokeWidth="4.8"
-                strokeDasharray="15 85"
-                strokeDashoffset="25"
-                className="cursor-pointer transition-all duration-300 hover:stroke-[5.5]"
-                onClick={() => setSelectedCategoryName(selectedCategoryName === "Transport" ? null : "Transport")}
-                opacity={selectedCategoryName && selectedCategoryName !== "Transport" ? 0.3 : 1}
-              />
-              {/* Housing (10%) */}
-              <circle
-                cx="21"
-                cy="21"
-                r="15.915"
-                fill="transparent"
-                stroke="#f43f5e"
-                strokeWidth="4.8"
-                strokeDasharray="10 90"
-                strokeDashoffset="10"
-                className="cursor-pointer transition-all duration-300 hover:stroke-[5.5]"
-                onClick={() => setSelectedCategoryName(selectedCategoryName === "Housing" ? null : "Housing")}
-                opacity={selectedCategoryName && selectedCategoryName !== "Housing" ? 0.3 : 1}
-              />
+              {/* Donut chart segments dynamically computed */}
+              {(() => {
+                let cumulativePercentage = 0;
+                return categoriesList.map((cat) => {
+                  if (cat.percentage <= 0) return null;
+                  const offset = 100 - cumulativePercentage;
+                  cumulativePercentage += cat.percentage;
+                  
+                  return (
+                    <circle
+                      key={cat.id}
+                      cx="21"
+                      cy="21"
+                      r="15.915"
+                      fill="transparent"
+                      stroke={cat.stroke}
+                      strokeWidth="4.8"
+                      strokeDasharray={`${cat.percentage} ${100 - cat.percentage}`}
+                      strokeDashoffset={offset}
+                      className="cursor-pointer transition-all duration-300 hover:stroke-[5.5]"
+                      onClick={() => setSelectedCategoryName(selectedCategoryName === cat.name ? null : cat.name)}
+                      opacity={selectedCategoryName && selectedCategoryName !== cat.name ? 0.3 : 1}
+                    />
+                  );
+                });
+              })()}
+
+              {totalExpense === 0 && (
+                <circle cx="21" cy="21" r="15.915" fill="transparent" stroke="currentColor" strokeWidth="4.5" className="text-slate-200 dark:text-slate-800" />
+              )}
             </svg>
 
             {/* Total value displayed inside donut center */}
@@ -197,7 +382,7 @@ export default function AnalyticsPage() {
 
           {/* Labels legend grid */}
           <div className="grid grid-cols-2 gap-2 text-xs pt-2">
-            {MOCK_CATEGORIES.map((cat) => {
+            {categoriesList.map((cat) => {
               const isFiltered = selectedCategoryName === cat.name;
               return (
                 <button
@@ -217,6 +402,9 @@ export default function AnalyticsPage() {
                 </button>
               );
             })}
+            {categoriesList.length === 0 && (
+              <span className="col-span-2 text-center text-[10px] text-muted-foreground py-2">No expenses in this period</span>
+            )}
           </div>
         </div>
 
@@ -224,46 +412,34 @@ export default function AnalyticsPage() {
         <div className="rounded-3xl bg-card border border-border p-5 space-y-4 shadow-sm flex flex-col justify-between">
           <div className="text-center">
             <h4 className="text-xs font-bold uppercase tracking-wider">Income vs Expenses Comparison</h4>
-            <p className="text-[10px] text-muted-foreground mt-0.5">Weekly breakdown this month</p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">
+              {period === "this_week" ? "Daily breakdown this week" : "Weekly breakdown this month"}
+            </p>
           </div>
 
-          {/* Sizing Fix: Explicit height h-32 with no flex-1 properties to prevent height collapsing on mobile */}
-          <div className="flex justify-center items-end h-32 gap-6 px-4 border-b border-border pb-2 pt-4 select-none">
-            {/* Week 1 */}
-            <div className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
-              <div className="flex gap-1 items-end h-[85%]">
-                <div className="w-2.5 h-[90%] bg-emerald-500/80 rounded-t-sm shadow-[0_0_10px_rgba(16,185,129,0.1)]" title="Income: 4,500,000 VND" />
-                <div className="w-2.5 h-[30%] bg-rose-500/80 rounded-t-sm" title="Expense: 1,500,000 VND" />
-              </div>
-              <span className="text-[9px] text-muted-foreground font-medium">W1</span>
-            </div>
+          <div className="flex justify-center items-end h-32 gap-4 sm:gap-6 px-4 border-b border-border pb-2 pt-4 select-none">
+            {bars.map((bar, idx) => {
+              const incomeHeight = `${(bar.income / maxBarValue) * 85}%`;
+              const expenseHeight = `${(bar.expense / maxBarValue) * 85}%`;
 
-            {/* Week 2 */}
-            <div className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
-              <div className="flex gap-1 items-end h-[85%]">
-                <div className="w-2.5 h-[50%] bg-emerald-500/80 rounded-t-sm" title="Income: 2,500,000 VND" />
-                <div className="w-2.5 h-[40%] bg-rose-500/80 rounded-t-sm" title="Expense: 2,000,000 VND" />
-              </div>
-              <span className="text-[9px] text-muted-foreground font-medium">W2</span>
-            </div>
-
-            {/* Week 3 */}
-            <div className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
-              <div className="flex gap-1 items-end h-[85%]">
-                <div className="w-2.5 h-[40%] bg-emerald-500/80 rounded-t-sm" title="Income: 2,000,000 VND" />
-                <div className="w-2.5 h-[15%] bg-rose-500/80 rounded-t-sm" title="Expense: 750,000 VND" />
-              </div>
-              <span className="text-[9px] text-muted-foreground font-medium">W3</span>
-            </div>
-
-            {/* Week 4 */}
-            <div className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
-              <div className="flex gap-1 items-end h-[85%]">
-                <div className="w-2.5 h-[80%] bg-emerald-500/80 rounded-t-sm" title="Income: 4,000,000 VND" />
-                <div className="w-2.5 h-[20%] bg-rose-500/80 rounded-t-sm" title="Expense: 1,000,000 VND" />
-              </div>
-              <span className="text-[9px] text-muted-foreground font-medium">W4</span>
-            </div>
+              return (
+                <div key={idx} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end">
+                  <div className="flex gap-1 items-end h-[85%] w-full justify-center">
+                    <div 
+                      style={{ height: incomeHeight }}
+                      className="w-2.5 bg-emerald-500/80 rounded-t-sm shadow-[0_0_10px_rgba(16,185,129,0.1)] transition-all duration-500" 
+                      title={`Income: ${formatCurrency(bar.income)}`} 
+                    />
+                    <div 
+                      style={{ height: expenseHeight }}
+                      className="w-2.5 bg-rose-500/80 rounded-t-sm transition-all duration-500" 
+                      title={`Expense: ${formatCurrency(bar.expense)}`} 
+                    />
+                  </div>
+                  <span className="text-[9px] text-muted-foreground font-medium">{bar.label}</span>
+                </div>
+              );
+            })}
           </div>
 
           <div className="flex justify-center gap-4 text-[10px] text-muted-foreground pt-2">
@@ -297,7 +473,7 @@ export default function AnalyticsPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filteredTransactions.map((tx) => {
+          {detailedTransactionsList.map((tx) => {
             const TxIcon = tx.icon;
             return (
               <div 
@@ -312,7 +488,6 @@ export default function AnalyticsPage() {
                     <h5 className="text-xs font-semibold">{tx.title}</h5>
                     <span className="text-[9px] text-muted-foreground block mt-0.5">{tx.time}</span>
                     
-                    {/* TRANSACTION NOTE DISPLAY */}
                     {tx.note && (
                       <p className="text-[9px] text-muted-foreground/80 italic mt-1 font-medium bg-accent/40 px-1.5 py-0.5 rounded inline-block">
                         Note: "{tx.note}"
@@ -329,9 +504,15 @@ export default function AnalyticsPage() {
               </div>
             );
           })}
+          {detailedTransactionsList.length === 0 && (
+            <div className="col-span-2 text-center text-xs text-muted-foreground py-8">
+              No transactions to display
+            </div>
+          )}
         </div>
       </div>
 
     </div>
   );
 }
+

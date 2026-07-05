@@ -147,16 +147,17 @@ ${partnerListStr}
 2. Determine transaction 'type':
    - 'EXPENSE': Regular spending (e.g. food, bills, shopping).
    - 'INCOME': Regular earnings (e.g. salary, gifts).
-   - 'DEBT_LENT': When the user lends money to someone else (e.g., "cho Huy vay 500k", "Huy mượn 500k").
-   - 'DEBT_BORROWED': When the user borrows money from someone else (e.g., "vay anh Nam 10m", "anh Nam cho vay 10m").
+   - 'DEBT_LENT': When the user lends money to someone else or someone owes the user money (e.g., "cho Huy vay 500k", "Huy mượn 500k", "Huy nợ 500k", "Trân nợ 100k", "Hải nợ mình 200k").
+   - 'DEBT_BORROWED': When the user borrows money from someone else or the user owes someone money (e.g., "vay anh Nam 10m", "anh Nam cho vay 10m", "nợ anh Nam 10m", "mình nợ anh Nam 10m").
+   - 'DEBT_REPAYMENT': When the user repays a debt, pays back someone, or receives repayment from someone who owed them (e.g., "trả nợ anh Nam 500k", "Huy trả nợ 150k", "trả anh Nam 500k tiền nợ"). Ensure it contains active repayment/pay-back actions. Simple owing statements like "[Name] nợ [Amount]" must be classified as DEBT_LENT, and "nợ [Name] [Amount]" must be DEBT_BORROWED.
 3. Map 'wallet' to one of the [AVAILABLE WALLET ACCOUNTS] listed above. It must match exactly.
    - If the user specifies a wallet (e.g., "momo", "vcb", "cash") that matches or is close to one in the list, map to it.
    - If no specific wallet is specified or it is ambiguous, select the most likely wallet, or default to the first wallet: "${wallets[0] || 'Momo'}".
 4. Map 'category' to one of the [AVAILABLE CATEGORIES] listed above. It must match exactly and be of the correct type (EXPENSE or INCOME).
    - E.g., if type is EXPENSE, map to an EXPENSE category. If type is INCOME, map to an INCOME category.
-   - For DEBT_LENT and DEBT_BORROWED, 'category' is not required and should be null or omitted.
-5. Extract 'description' as a short, meaningful description of the transaction (e.g. "Highlands Coffee", "Supermarket shopping", "Salary payment", "Bus fare", "Cho Huy vay", "Vay anh Nam"). Make sure it is descriptive.
-6. Extract 'partner' (Only for DEBT_LENT or DEBT_BORROWED):
+   - For DEBT_LENT, DEBT_BORROWED, and DEBT_REPAYMENT, 'category' is not required and should be null or omitted.
+5. Extract 'description' as a short, meaningful description of the transaction (e.g. "Highlands Coffee", "Supermarket shopping", "Salary payment", "Bus fare", "Cho Huy vay", "Vay anh Nam", "Trả nợ anh Nam", "Huy trả nợ"). Make sure it is descriptive.
+6. Extract 'partner' (Only for DEBT_LENT, DEBT_BORROWED, or DEBT_REPAYMENT):
    - Extract the name of the person (e.g. "Huy", "Nam").
    - If the name matches or is close to a name in [AVAILABLE DEBT PARTNERS], map to it exactly. Otherwise, output the raw capitalized name.
    - For standard INCOME and EXPENSE transactions, 'partner' must be null.
@@ -184,7 +185,7 @@ function buildGeminiPayload(prompt: string) {
         properties: {
           type: {
             type: "STRING",
-            enum: ["INCOME", "EXPENSE", "DEBT_LENT", "DEBT_BORROWED"],
+            enum: ["INCOME", "EXPENSE", "DEBT_LENT", "DEBT_BORROWED", "DEBT_REPAYMENT"],
           },
           amount: {
             type: "INTEGER",
@@ -195,15 +196,15 @@ function buildGeminiPayload(prompt: string) {
           },
           category: {
             type: "STRING",
-            description: "The name of the category matched exactly from the available categories. Set to null for DEBT_LENT and DEBT_BORROWED.",
+            description: "The name of the category matched exactly from the available categories. Set to null for DEBT_LENT, DEBT_BORROWED, and DEBT_REPAYMENT.",
           },
           description: {
             type: "STRING",
-            description: "A brief merchant or activity description (e.g. 'Gasoline', 'Lunch', 'Vay anh Nam').",
+            description: "A brief merchant or activity description (e.g. 'Gasoline', 'Lunch', 'Vay anh Nam', 'Trả nợ anh Nam').",
           },
           partner: {
             type: "STRING",
-            description: "The name of the person being lent to or borrowed from. Set to null for regular INCOME/EXPENSE.",
+            description: "The name of the person being lent to, borrowed from, or repayment partner. Set to null for regular INCOME/EXPENSE.",
           },
           note: {
             type: "STRING",
@@ -230,7 +231,7 @@ function cleanAndParseJSON(text: string) {
 
 function validateAndNormalize(result: any, wallets: string[], categories: Category[], partners: string[]) {
   // Normalize type
-  const allowedTypes = ["INCOME", "EXPENSE", "DEBT_LENT", "DEBT_BORROWED"];
+  const allowedTypes = ["INCOME", "EXPENSE", "DEBT_LENT", "DEBT_BORROWED", "DEBT_REPAYMENT"];
   const type = allowedTypes.includes(result.type) ? result.type : "EXPENSE";
 
   // Normalize amount
@@ -278,9 +279,9 @@ function validateAndNormalize(result: any, wallets: string[], categories: Catego
   // Normalize description
   const description = (result.description || "").trim() || "Transaction";
 
-  // Normalize partner: only map for DEBT_LENT and DEBT_BORROWED
+  // Normalize partner: only map for DEBT_LENT, DEBT_BORROWED, and DEBT_REPAYMENT
   let partner: string | null = null;
-  if (type === "DEBT_LENT" || type === "DEBT_BORROWED") {
+  if (type === "DEBT_LENT" || type === "DEBT_BORROWED" || type === "DEBT_REPAYMENT") {
     const rawPartner = (result.partner || "").trim();
     if (rawPartner) {
       const matchedPartner = partners.find(

@@ -23,10 +23,12 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/shared/AuthProvider";
+import Portal from "@/components/shared/Portal";
 
 interface Wallet {
   id: string;
   name: string;
+  balance: number;
 }
 
 interface Category {
@@ -108,6 +110,13 @@ function TransactionsContent() {
   const [formCategoryId, setFormCategoryId] = useState("");
   const [formNote, setFormNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [formPartnerId, setFormPartnerId] = useState("");
+  const [formNewPartnerName, setFormNewPartnerName] = useState("");
+  const [partnerConfirmData, setPartnerConfirmData] = useState<{
+    partnerName: string;
+    onConfirm: (createdPartnerId: string) => Promise<void>;
+    onCancel: () => void;
+  } | null>(null);
 
   // --- CATEGORY MANAGEMENT STATES ---
   const [isManageCategoriesOpen, setIsManageCategoriesOpen] = useState(false);
@@ -146,7 +155,7 @@ function TransactionsContent() {
       // 1. Fetch Wallets
       const { data: walletsData } = await supabase
         .from("wallets")
-        .select("id, name")
+        .select("id, name, balance")
         .order("created_at", { ascending: true });
       setWallets(walletsData || []);
       if (walletsData && walletsData.length > 0) {
@@ -186,14 +195,15 @@ function TransactionsContent() {
         .select(`
           *,
           wallets (name),
-          categories (name)
+          categories (name),
+          debt_partners (name)
         `)
         .order("created_at", { ascending: false });
 
       const formattedTxs = (txsData || []).map((tx: any) => ({
         ...tx,
         wallet_name: tx.wallets?.name || "Unknown Wallet",
-        category_name: tx.categories?.name || "Uncategorized",
+        category_name: tx.categories?.name || (tx.debt_partners?.name ? `Contact: ${tx.debt_partners.name}` : "Uncategorized"),
         dateStr: getGroupDateStr(tx.created_at)
       }));
       setTransactions(formattedTxs);
@@ -235,6 +245,8 @@ function TransactionsContent() {
     else if (categories.length > 0) setFormCategoryId(categories[0].id);
 
     setFormNote("");
+    setFormPartnerId(debtPartners[0]?.id || "");
+    setFormNewPartnerName("");
     setIsFormOpen(true);
   };
 
@@ -244,8 +256,13 @@ function TransactionsContent() {
     setFormAmount(Math.abs(tx.amount).toString());
     setFormType(tx.type);
     setFormWalletId(tx.wallet_id);
-    setFormCategoryId(tx.category_id);
+    setFormCategoryId(tx.category_id || "");
     setFormNote(tx.note || "");
+    
+    // Set partner if applicable
+    const existingPartnerId = (tx as any).debt_partner_id || "";
+    setFormPartnerId(existingPartnerId);
+    setFormNewPartnerName("");
     setIsFormOpen(true);
   };
 
@@ -257,41 +274,116 @@ function TransactionsContent() {
     if (isNaN(amt) || amt < 0) return;
 
     setSubmitting(true);
-    try {
-      const txData = {
-        description: formDescription.trim(),
-        amount: amt,
-        type: formType,
-        wallet_id: formWalletId,
-        category_id: formCategoryId || null,
-        note: formNote.trim() || null,
-        user_id: user.id,
-        status: "COMPLETED"
-      };
+    
+    const isDebt = formType === "DEBT_LENT" || formType === "DEBT_BORROWED";
+    const isRepayment = formType === "DEBT_REPAYMENT";
 
-      if (editingTx) {
-        // UPDATE
-        const { error } = await supabase
-          .from("transactions")
-          .update(txData)
-          .eq("id", editingTx.id);
+    const saveTransactionData = async (partnerId: string | null) => {
+      try {
+        const status = isDebt ? "PENDING" : "COMPLETED";
+        const txData = {
+          description: formDescription.trim(),
+          amount: amt,
+          type: formType,
+          wallet_id: formWalletId,
+          category_id: (!isDebt && !isRepayment) ? (formCategoryId || null) : null,
+          debt_partner_id: partnerId || null,
+          note: formNote.trim() || null,
+          user_id: user.id,
+          status: status
+        };
 
-        if (error) throw error;
-      } else {
-        // INSERT
-        const { error } = await supabase
-          .from("transactions")
-          .insert(txData);
+        if (editingTx) {
+          const { error } = await supabase
+            .from("transactions")
+            .update(txData)
+            .eq("id", editingTx.id);
 
-        if (error) throw error;
+          if (error) throw error;
+        } else {
+          const { data: newTx, error: insertErr } = await supabase
+            .from("transactions")
+            .insert(txData)
+            .select()
+            .single();
+
+          if (insertErr) throw insertErr;
+
+          // If it is a repayment, resolve and update corresponding PENDING debt to COMPLETED and link it
+          if (isRepayment && partnerId && newTx) {
+            const { data: originalDebt } = await supabase
+              .from("transactions")
+              .select("id")
+              .eq("debt_partner_id", partnerId)
+              .eq("status", "PENDING")
+              .in("type", ["DEBT_BORROWED", "DEBT_LENT"])
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (originalDebt) {
+              await supabase
+                .from("transactions")
+                .update({ 
+                  status: "COMPLETED",
+                  repaid_by_transaction_id: newTx.id
+                })
+                .eq("id", originalDebt.id);
+            }
+          }
+        }
+
+        setIsFormOpen(false);
+        fetchTransactions();
+
+        // Refetch partners to keep caches in-sync
+        const { data: partnersData } = await supabase
+          .from("debt_partners")
+          .select("id, name")
+          .order("name", { ascending: true });
+        setDebtPartners(partnersData || []);
+      } catch (err) {
+        console.error("Error inside saveTransactionData:", err);
+        alert("Failed to save transaction: " + (err as any).message);
+      } finally {
+        setSubmitting(false);
       }
+    };
 
-      setIsFormOpen(false);
-      fetchTransactions();
-    } catch (err) {
-      console.error("Error saving transaction:", err);
-    } finally {
-      setSubmitting(false);
+    // If it's a debt/repayment and user wants to create a new partner
+    if ((isDebt || isRepayment) && formPartnerId === "NEW") {
+      if (!formNewPartnerName.trim()) {
+        alert("Please enter new partner name");
+        setSubmitting(false);
+        return;
+      }
+      
+      const matched = debtPartners.find(p => p.name.toLowerCase() === formNewPartnerName.trim().toLowerCase());
+      if (matched) {
+        // Partner already exists, save directly using existing id
+        saveTransactionData(matched.id);
+      } else {
+        // Trigger confirmation modal
+        setPartnerConfirmData({
+          partnerName: formNewPartnerName.trim(),
+          onConfirm: async (createdPartnerId: string) => {
+            await saveTransactionData(createdPartnerId);
+            setPartnerConfirmData(null);
+          },
+          onCancel: () => {
+            setSubmitting(false);
+            setPartnerConfirmData(null);
+          }
+        });
+      }
+    } else {
+      // Normal transaction or existing partner selected
+      try {
+        await saveTransactionData(formPartnerId || null);
+      } catch (err) {
+        console.error("Error saving transaction:", err);
+        setSubmitting(false);
+      }
     }
   };
 
@@ -487,85 +579,118 @@ function TransactionsContent() {
     if (!targetMsg || !targetMsg.confirmationCard) return;
     const card = targetMsg.confirmationCard;
 
-    try {
-      // 1. Resolve Wallet ID
-      const wId = wallets.find(w => w.name.toLowerCase() === card.wallet.toLowerCase())?.id || wallets[0]?.id;
-      
-      // 2. Resolve Category ID (only for standard income/expense)
-      const isDebt = card.type === "DEBT_LENT" || card.type === "DEBT_BORROWED";
-      let cId = null;
-      if (!isDebt && card.category) {
-        cId = categories.find(c => c.name.toLowerCase() === card.category!.toLowerCase())?.id || categories[0]?.id;
+    const isDebt = card.type === "DEBT_LENT" || card.type === "DEBT_BORROWED" || card.type === "DEBT_REPAYMENT";
+    let partnerId = null;
+    let matchedPartner = null;
+
+    if (isDebt && card.partner) {
+      matchedPartner = debtPartners.find(p => p.name.toLowerCase() === card.partner!.toLowerCase());
+      if (matchedPartner) {
+        partnerId = matchedPartner.id;
       }
+    }
 
-      // 3. Resolve or Create Debt Partner ID (only for debt)
-      let partnerId = null;
-      if (isDebt && card.partner) {
-        const matched = debtPartners.find(p => p.name.toLowerCase() === card.partner!.toLowerCase());
-        if (matched) {
-          partnerId = matched.id;
-        } else {
-          // Dynamic partner creation
-          const { data: newPartner, error: partnerErr } = await supabase
-            .from("debt_partners")
-            .insert({ user_id: user.id, name: card.partner.trim() })
-            .select()
-            .single();
-
-          if (partnerErr) throw partnerErr;
-          partnerId = newPartner.id;
-          
-          // Add to local state list so we don't recreate it next time
-          setDebtPartners(prev => [...prev, { id: newPartner.id, name: newPartner.name }]);
+    const saveAICard = async (pId: string | null) => {
+      try {
+        // 1. Resolve Wallet ID
+        const wId = wallets.find(w => w.name.toLowerCase() === card.wallet.toLowerCase())?.id || wallets[0]?.id;
+        
+        // 2. Resolve Category ID (only for standard income/expense)
+        const isActualDebt = card.type === "DEBT_LENT" || card.type === "DEBT_BORROWED";
+        let cId = null;
+        if (!isActualDebt && card.category) {
+          cId = categories.find(c => c.name.toLowerCase() === card.category!.toLowerCase())?.id || categories[0]?.id;
         }
-      }
 
-      // 4. Save Transaction to Supabase
-      const status = isDebt ? "PENDING" : "COMPLETED";
-      const { error: txErr } = await supabase.from("transactions").insert({
-        user_id: user.id,
-        wallet_id: wId,
-        category_id: cId || null,
-        debt_partner_id: partnerId || null,
-        amount: card.amount,
-        type: card.type,
-        description: card.description,
-        note: card.note || null,
-        status: status
-      });
+        // 4. Save Transaction to Supabase
+        const status = isActualDebt ? "PENDING" : "COMPLETED";
+        const { data: newTx, error: txErr } = await supabase.from("transactions").insert({
+          user_id: user.id,
+          wallet_id: wId,
+          category_id: cId || null,
+          debt_partner_id: pId || null,
+          amount: card.amount,
+          type: card.type,
+          description: card.description,
+          note: card.note || null,
+          status: status
+        }).select().single();
 
-      if (txErr) throw txErr;
+        if (txErr) throw txErr;
 
-      // 5. Refetch Transactions to update UI
-      fetchTransactions();
+        // If it is a repayment, update original PENDING debt status to COMPLETED and link it
+        if (card.type === "DEBT_REPAYMENT" && pId && newTx) {
+          const { data: originalDebt } = await supabase
+            .from("transactions")
+            .select("id")
+            .eq("debt_partner_id", pId)
+            .eq("status", "PENDING")
+            .in("type", ["DEBT_BORROWED", "DEBT_LENT"])
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
 
-      // 6. Update Messages UI state to marked as saved
-      setMessages((prev) =>
-        prev.map((msg) => {
-          if (msg.id === msgId && msg.confirmationCard) {
-            let successText = `✅ Saved transaction **${card.description}** successfully!\nAmount: ${formatCurrency(card.amount)} in **${card.wallet}** wallet.`;
-            if (isDebt && card.partner) {
-              const actionLabel = card.type === "DEBT_LENT" ? "lent to" : "borrowed from";
-              successText = `✅ Recorded debt successfully!\nAmount: ${formatCurrency(card.amount)} in **${card.wallet}** wallet ${actionLabel} **${card.partner}** (Status: PENDING).`;
-            } else if (card.category) {
-              successText += ` (Category: ${card.category}).`;
-            }
-            if (card.note) {
-              successText += `\nNote: *"${card.note}"*`;
-            }
-            return {
-              ...msg,
-              text: successText,
-              confirmationCard: { ...card, status: "saved" }
-            };
+          if (originalDebt) {
+            await supabase
+              .from("transactions")
+              .update({ 
+                status: "COMPLETED",
+                repaid_by_transaction_id: newTx.id
+              })
+              .eq("id", originalDebt.id);
           }
-          return msg;
-        })
-      );
+        }
 
-    } catch (err) {
-      console.error("Error saving AI transaction:", err);
-      alert("Failed to save transaction: " + (err as any).message);
+        // 5. Refetch Transactions to update UI
+        fetchTransactions();
+
+        // 6. Update Messages UI state to marked as saved
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (msg.id === msgId && msg.confirmationCard) {
+              let successText = `✅ Saved transaction **${card.description}** successfully!\nAmount: ${formatCurrency(card.amount)} in **${card.wallet}** wallet.`;
+              if (isDebt && card.partner) {
+                const actionLabel = card.type === "DEBT_LENT" ? "lent to" : card.type === "DEBT_BORROWED" ? "borrowed from" : "repaid with";
+                successText = `✅ Recorded debt action successfully!\nAmount: ${formatCurrency(card.amount)} in **${card.wallet}** wallet ${card.type === "DEBT_REPAYMENT" ? "repayment for" : actionLabel} **${card.partner}** (Status: ${status}).`;
+              } else if (card.category) {
+                successText += ` (Category: ${card.category}).`;
+              }
+              if (card.note) {
+                successText += `\nNote: *"${card.note}"*`;
+              }
+              return {
+                ...msg,
+                text: successText,
+                confirmationCard: { ...card, status: "saved" }
+              };
+            }
+            return msg;
+          })
+        );
+      } catch (err) {
+        console.error("Error inside saveAICard:", err);
+        alert("Failed to save transaction: " + (err as any).message);
+      }
+    };
+
+    if (isDebt && card.partner && !matchedPartner) {
+      // Trigger confirmation dialog
+      setPartnerConfirmData({
+        partnerName: card.partner.trim(),
+        onConfirm: async (createdPartnerId: string) => {
+          await saveAICard(createdPartnerId);
+        },
+        onCancel: () => {
+          // Do nothing, just close dialog
+        }
+      });
+    } else {
+      // Direct save
+      try {
+        await saveAICard(partnerId);
+      } catch (err) {
+        console.error("Error saving AI transaction:", err);
+      }
     }
   };
 
@@ -983,286 +1108,403 @@ function TransactionsContent() {
 
       {/* --- 3. INTERACTIVE TRANSACTION MODAL FORM (CREATE / EDIT) --- */}
       {isFormOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <form 
-            onSubmit={handleSaveForm}
-            className="w-full max-w-md bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground font-sans"
-          >
-            {/* Modal Header */}
-            <div className="flex items-center justify-between pb-3 border-b border-border">
-              <h3 className="text-sm font-bold font-heading">
-                {editingTx ? "Edit Transaction" : "Add Transaction"}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setIsFormOpen(false)}
-                className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+        <Portal>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+            <form 
+              onSubmit={handleSaveForm}
+              className="w-full max-w-md bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground font-sans"
+            >
+              {/* Modal Header */}
+              <div className="flex items-center justify-between pb-3 border-b border-border">
+                <h3 className="text-sm font-bold font-heading">
+                  {editingTx ? "Edit Transaction" : "Add Transaction"}
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setIsFormOpen(false)}
+                  className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
 
-            {/* Description/Merchant Field */}
-            <div className="space-y-1">
-              <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Description / Merchant</label>
-              <input
-                type="text"
-                required
-                value={formDescription}
-                onChange={(e) => setFormDescription(e.target.value)}
-                placeholder="e.g. Highlands Coffee, Uber Ride"
-                className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
-              />
-            </div>
+              {/* Amount & Type Grid */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Type Select */}
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Type</label>
+                  <div className="relative">
+                    <select
+                      value={formType}
+                      onChange={(e) => {
+                        const val = e.target.value as any;
+                        setFormType(val);
+                        // Clear category if switching to debt-related types
+                        if (val === "DEBT_LENT" || val === "DEBT_BORROWED" || val === "DEBT_REPAYMENT") {
+                          setFormCategoryId("");
+                        } else {
+                          setFormPartnerId("");
+                          setFormNewPartnerName("");
+                        }
+                      }}
+                      className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none focus:border-emerald-500/40 font-semibold"
+                    >
+                      <option value="EXPENSE">Expense</option>
+                      <option value="INCOME">Income</option>
+                      <option value="DEBT_LENT">Lent (Loan)</option>
+                      <option value="DEBT_BORROWED">Borrowed (Debt)</option>
+                      <option value="DEBT_REPAYMENT">Repayment</option>
+                    </select>
+                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                  </div>
+                </div>
 
-            {/* Amount & Type Grid */}
-            <div className="grid grid-cols-2 gap-3">
+                {/* Amount Input */}
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Amount (VND)</label>
+                  <input
+                    type="number"
+                    required
+                    value={formAmount}
+                    onChange={(e) => setFormAmount(e.target.value)}
+                    placeholder="e.g. 50000"
+                    className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                  />
+                </div>
+              </div>
+
+              {/* Description Input */}
               <div className="space-y-1">
-                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Amount (VND)</label>
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Description / Title</label>
                 <input
-                  type="number"
+                  type="text"
                   required
-                  value={formAmount}
-                  onChange={(e) => setFormAmount(e.target.value)}
-                  placeholder="e.g. 50000"
-                  className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-bold"
+                  value={formDescription}
+                  onChange={(e) => setFormDescription(e.target.value)}
+                  placeholder="e.g. Highlands Coffee, Salad lunch"
+                  className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                 />
               </div>
 
+              {/* Wallet Select */}
               <div className="space-y-1">
-                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Type</label>
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Account/Wallet Source</label>
                 <div className="relative">
                   <select
-                    value={formType}
-                    onChange={(e) => {
-                      const newType = e.target.value;
-                      setFormType(newType);
-                      // Update category recommendation based on type
-                      if (newType === "INCOME") {
-                        const firstInc = categories.find(c => c.type === "INCOME");
-                        if (firstInc) setFormCategoryId(firstInc.id);
-                      } else {
-                        const firstExp = categories.find(c => c.type === "EXPENSE");
-                        if (firstExp) setFormCategoryId(firstExp.id);
-                      }
-                    }}
-                    className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none"
-                  >
-                    <option value="EXPENSE">Expense</option>
-                    <option value="INCOME">Income</option>
-                    <option value="DEBT_BORROWED">Borrowed (Debt)</option>
-                    <option value="DEBT_LENT">Lent (Loan)</option>
-                    <option value="DEBT_REPAYMENT">Repayment</option>
-                  </select>
-                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-                </div>
-              </div>
-            </div>
-
-            {/* Wallet & Category Grid */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Account</label>
-                <div className="relative">
-                  <select
+                    required
                     value={formWalletId}
                     onChange={(e) => setFormWalletId(e.target.value)}
-                    className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none"
+                    className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none focus:border-emerald-500/40 font-semibold"
                   >
+                    <option value="" disabled>Select Wallet</option>
                     {wallets.map((w) => (
-                      <option key={w.id} value={w.id}>{w.name}</option>
+                      <option key={w.id} value={w.id}>{w.name} ({w.balance.toLocaleString()} VND)</option>
                     ))}
                   </select>
                   <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
                 </div>
               </div>
 
-              <div className="space-y-1">
-                <div className="flex justify-between items-center mb-0.5">
+              {/* Conditional Selector: Category (for expense/income) OR Partner (for debt-related) */}
+              {formType === "EXPENSE" || formType === "INCOME" ? (
+                /* Category Select */
+                <div className="space-y-1">
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category</label>
-                  <button
-                    type="button"
-                    onClick={() => setIsManageCategoriesOpen(true)}
-                    className="text-[8px] text-emerald-500 hover:underline font-bold"
-                  >
-                    Manage
-                  </button>
-                </div>
-                <div className="relative">
-                  <select
-                    value={formCategoryId}
-                    onChange={(e) => setFormCategoryId(e.target.value)}
-                    className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none"
-                  >
-                    {categories
-                      .filter((c) => {
-                        // Filter categories by matching type
-                        if (formType === "INCOME") return c.type === "INCOME";
-                        return c.type === "EXPENSE"; // debts and others maps to expense by default for sorting
-                      })
-                      .map((c) => (
+                  <div className="relative">
+                    <select
+                      required
+                      value={formCategoryId}
+                      onChange={(e) => setFormCategoryId(e.target.value)}
+                      className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none focus:border-emerald-500/40 font-semibold"
+                    >
+                      <option value="" disabled>Select Category</option>
+                      {categories.filter(c => c.type === formType).map((c) => (
                         <option key={c.id} value={c.id}>{c.name}</option>
                       ))}
-                    <option value="">None / Uncategorized</option>
-                  </select>
-                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                    </select>
+                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                  </div>
                 </div>
+              ) : (
+                /* Debt Partner Select */
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Debt Partner</label>
+                  <div className="relative">
+                    <select
+                      required
+                      value={formPartnerId}
+                      onChange={(e) => {
+                        setFormPartnerId(e.target.value);
+                        if (e.target.value !== "NEW") {
+                          setFormNewPartnerName("");
+                        }
+                      }}
+                      className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none focus:border-emerald-500/40 font-semibold"
+                    >
+                      <option value="" disabled>Select Partner</option>
+                      {debtPartners.map((dp) => (
+                        <option key={dp.id} value={dp.id}>{dp.name}</option>
+                      ))}
+                      <option value="NEW" className="text-emerald-500 font-bold">+ Add New Partner...</option>
+                    </select>
+                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                  </div>
+                </div>
+              )}
+
+              {/* New Partner Name Input (conditionally shown) */}
+              {(formType === "DEBT_LENT" || formType === "DEBT_BORROWED" || formType === "DEBT_REPAYMENT") && formPartnerId === "NEW" && (
+                <div className="space-y-1 animate-fade-in">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">New Partner Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={formNewPartnerName}
+                    onChange={(e) => setFormNewPartnerName(e.target.value)}
+                    placeholder="e.g. Anh Huy, Nam"
+                    className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                  />
+                </div>
+              )}
+
+              {/* Note Input */}
+              <div className="space-y-1">
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Note / Memo (Optional)</label>
+                <textarea
+                  value={formNote}
+                  onChange={(e) => setFormNote(e.target.value)}
+                  placeholder="e.g. Lunch with developers, client meeting"
+                  rows={2}
+                  className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 resize-none font-medium"
+                />
               </div>
-            </div>
 
-            {/* Note Input */}
-            <div className="space-y-1">
-              <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Note / Memo (Optional)</label>
-              <textarea
-                value={formNote}
-                onChange={(e) => setFormNote(e.target.value)}
-                placeholder="e.g. Lunch with developers, client meeting"
-                rows={2}
-                className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 resize-none font-medium"
-              />
-            </div>
-
-            {/* Modal Actions Footer */}
-            <div className="flex gap-2 pt-3 border-t border-border">
-              {editingTx && (
+              {/* Modal Actions Footer */}
+              <div className="flex gap-2 pt-3 border-t border-border">
+                {editingTx && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteTx(editingTx.id)}
+                    disabled={submitting}
+                    className="flex-1 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold transition-colors cursor-pointer text-xs text-center border border-rose-500/20 flex items-center justify-center"
+                  >
+                    Delete
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => handleDeleteTx(editingTx.id)}
-                  disabled={submitting}
-                  className="flex-1 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold transition-colors cursor-pointer text-xs text-center border border-rose-500/20 flex items-center justify-center"
+                  onClick={() => setIsFormOpen(false)}
+                  className="flex-1 py-2 rounded-xl bg-accent border border-border text-muted-foreground hover:text-foreground font-semibold transition-colors cursor-pointer text-xs text-center"
                 >
-                  Delete
+                  Cancel
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setIsFormOpen(false)}
-                className="flex-1 py-2 rounded-xl bg-accent border border-border text-muted-foreground hover:text-foreground font-semibold transition-colors cursor-pointer text-xs text-center"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={submitting}
-                className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-xs text-center flex items-center justify-center"
-              >
-                {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
-              </button>
-            </div>
-          </form>
-        </div>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-xs text-center flex items-center justify-center"
+                >
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </Portal>
       )}
 
       {/* --- CATEGORY MANAGEMENT MODAL --- */}
       {isManageCategoriesOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[80%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
-            <div className="flex items-center justify-between pb-3 border-b border-border">
-              <h3 className="text-sm font-bold font-heading">Manage Categories</h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsManageCategoriesOpen(false);
-                  setEditingCategory(null);
-                  setNewCategoryName("");
-                }}
-                className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Form to Add/Edit Category */}
-            <form 
-              onSubmit={editingCategory ? handleUpdateCategory : handleAddCategory}
-              className="p-4 bg-background border border-border rounded-2xl grid grid-cols-1 sm:grid-cols-3 gap-3 items-end"
-            >
-              <div className="space-y-1 sm:col-span-1.5">
-                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category Name</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Health, Coffee"
-                  value={newCategoryName}
-                  onChange={(e) => setNewCategoryName(e.target.value)}
-                  className="w-full bg-card border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Type</label>
-                <div className="relative">
-                  <select
-                    value={newCategoryType}
-                    onChange={(e) => setNewCategoryType(e.target.value as "INCOME" | "EXPENSE")}
-                    className="w-full bg-card border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none"
-                  >
-                    <option value="EXPENSE">Expense</option>
-                    <option value="INCOME">Income</option>
-                  </select>
-                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                className="py-2.5 rounded-xl bg-emerald-500 text-slate-950 hover:bg-emerald-400 font-bold text-xs cursor-pointer flex items-center justify-center"
-              >
-                {editingCategory ? "Update" : "Add Category"}
-              </button>
-            </form>
-
-            {/* List Categories */}
-            <div className="space-y-2 max-h-60 overflow-y-auto">
-              {categories.map((c) => (
-                <div 
-                  key={c.id} 
-                  className="flex items-center justify-between p-3 rounded-xl bg-background border border-border"
+        <Portal>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+            <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[80%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
+              <div className="flex items-center justify-between pb-3 border-b border-border">
+                <h3 className="text-sm font-bold font-heading">Manage Categories</h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsManageCategoriesOpen(false);
+                    setEditingCategory(null);
+                    setNewCategoryName("");
+                  }}
+                  className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
                 >
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold">{c.name}</span>
-                    <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
-                      c.type === "EXPENSE" ? "bg-rose-500/10 text-rose-550" : "bg-emerald-500/10 text-emerald-500"
-                    }`}>
-                      {c.type === "EXPENSE" ? "Expense" : "Income"}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => {
-                        setEditingCategory(c);
-                        setNewCategoryName(c.name);
-                        setNewCategoryType(c.type);
-                      }}
-                      className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Form to Add/Edit Category */}
+              <form 
+                onSubmit={editingCategory ? handleUpdateCategory : handleAddCategory}
+                className="p-4 bg-background border border-border rounded-2xl grid grid-cols-1 sm:grid-cols-3 gap-3 items-end"
+              >
+                <div className="space-y-1 sm:col-span-1.5">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category Name</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Health, Coffee"
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    className="w-full bg-card border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Type</label>
+                  <div className="relative">
+                    <select
+                      value={newCategoryType}
+                      onChange={(e) => setNewCategoryType(e.target.value as "INCOME" | "EXPENSE")}
+                      className="w-full bg-card border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none"
                     >
-                      <Edit2 className="h-3 w-3" />
-                    </button>
-                    <button
-                      onClick={() => handleDeleteCategory(c.id)}
-                      className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-500/10 transition-colors"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
+                      <option value="EXPENSE">Expense</option>
+                      <option value="INCOME">Income</option>
+                    </select>
+                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
                   </div>
                 </div>
-              ))}
-            </div>
 
-            <div className="pt-3 border-t border-border flex justify-end">
-              <button
-                onClick={() => {
-                  setIsManageCategoriesOpen(false);
-                  setEditingCategory(null);
-                  setNewCategoryName("");
-                }}
-                className="px-4 py-2 rounded-xl bg-accent text-xs font-semibold cursor-pointer"
-              >
-                Close
-              </button>
+                <button
+                  type="submit"
+                  className="py-2.5 rounded-xl bg-emerald-500 text-slate-950 hover:bg-emerald-400 font-bold text-xs cursor-pointer flex items-center justify-center"
+                >
+                  {editingCategory ? "Update" : "Add Category"}
+                </button>
+              </form>
+
+              {/* List Categories */}
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {categories.map((c) => (
+                  <div 
+                    key={c.id} 
+                    className="flex items-center justify-between p-3 rounded-xl bg-background border border-border"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold">{c.name}</span>
+                      <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
+                        c.type === "EXPENSE" ? "bg-rose-500/10 text-rose-550" : "bg-emerald-500/10 text-emerald-500"
+                      }`}>
+                        {c.type === "EXPENSE" ? "Expense" : "Income"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          setEditingCategory(c);
+                          setNewCategoryName(c.name);
+                          setNewCategoryType(c.type);
+                        }}
+                        className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                      >
+                        <Edit2 className="h-3 w-3" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteCategory(c.id)}
+                        className="p-1.5 rounded-lg text-rose-550 hover:bg-rose-500/10 transition-colors"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="pt-3 border-t border-border flex justify-end">
+                <button
+                  onClick={() => {
+                    setIsManageCategoriesOpen(false);
+                    setEditingCategory(null);
+                    setNewCategoryName("");
+                  }}
+                  className="px-4 py-2 rounded-xl bg-accent text-xs font-semibold cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        </Portal>
+      )}
+
+      {/* --- 4. NEW PARTNER CONFIRMATION DIALOG MODAL --- */}
+      {partnerConfirmData && (
+        <Portal>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+            <div className="w-full max-w-sm bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
+              <div className="flex items-center justify-between pb-3 border-b border-border">
+                <h3 className="text-sm font-bold font-heading text-amber-500 flex items-center gap-1.5">
+                  <UserCheck className="h-4 w-4" /> Create Contact?
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    partnerConfirmData.onCancel();
+                    setPartnerConfirmData(null);
+                  }}
+                  className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Do you want to create a new debt contact for <strong className="text-foreground">"{partnerConfirmData.partnerName}"</strong>?
+              </p>
+
+              <div className="flex gap-2 pt-3 border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => {
+                    partnerConfirmData.onCancel();
+                    setPartnerConfirmData(null);
+                  }}
+                  className="flex-1 py-2 rounded-xl bg-accent border border-border text-muted-foreground hover:text-foreground font-semibold transition-colors cursor-pointer text-xs text-center"
+                >
+                  No, Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      // Case-insensitive duplicate contact check
+                      const { data: existing, error: checkErr } = await supabase
+                        .from("debt_partners")
+                        .select("id")
+                        .eq("user_id", user?.id)
+                        .ilike("name", partnerConfirmData.partnerName.trim());
+
+                      if (checkErr) throw checkErr;
+                      if (existing && existing.length > 0) {
+                        alert("A contact with this name already exists.");
+                        setPartnerConfirmData(null);
+                        return;
+                      }
+
+                      const { data: newPartner, error: partnerErr } = await supabase
+                        .from("debt_partners")
+                        .insert({ user_id: user?.id, name: partnerConfirmData.partnerName.trim() })
+                        .select()
+                        .single();
+
+                      if (partnerErr) throw partnerErr;
+                      
+                      setDebtPartners(prev => [...prev, { id: newPartner.id, name: newPartner.name }]);
+                      
+                      const onConfirmCb = partnerConfirmData.onConfirm;
+                      setPartnerConfirmData(null); // Close the modal immediately before executing callbacks!
+                      await onConfirmCb(newPartner.id);
+                    } catch (err: any) {
+                      console.error("Error creating partner in confirmation modal:", err);
+                      alert("Failed to create partner: " + err.message);
+                    }
+                  }}
+                  className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-xs text-center"
+                >
+                  Yes, Create
+                </button>
+              </div>
+            </div>
+          </div>
+        </Portal>
       )}
 
     </div>

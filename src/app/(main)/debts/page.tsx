@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   ArrowUpRight, 
   ArrowDownLeft, 
@@ -12,8 +12,12 @@ import {
   CheckCircle2,
   AlertCircle,
   HelpCircle,
-  Plus
+  Plus,
+  Loader2
 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/components/shared/AuthProvider";
+import Portal from "@/components/shared/Portal";
 
 interface DebtItem {
   id: string;
@@ -24,6 +28,11 @@ interface DebtItem {
   date: string;
   dueDate?: string;
   wallet: string;
+  repaidDate?: string;
+  repayWallet?: string;
+  repaid_by_transaction_id?: string;
+  isOrphanRepayment?: boolean;
+  rawDate: Date;
 }
 
 interface Partner {
@@ -34,41 +43,184 @@ interface Partner {
   debts: DebtItem[];
 }
 
-const MOCK_PARTNERS: Partner[] = [
-  {
-    id: "p1",
-    name: "Nam",
-    totalLent: 0,
-    totalBorrowed: 2000000,
-    debts: [
-      { id: "d1", title: "Borrowed for Mechanical Keyboard", amount: 2000000, type: "BORROWED", status: "PENDING", date: "Jul 01, 2026", dueDate: "Jul 15, 2026", wallet: "Cash" },
-      { id: "d2", title: "Borrowed for drinks", amount: 150000, type: "BORROWED", status: "COMPLETED", date: "Jun 15, 2026", wallet: "MoMo Wallet" },
-    ]
-  },
-  {
-    id: "p2",
-    name: "Lan",
-    totalLent: 1200000,
-    totalBorrowed: 0,
-    debts: [
-      { id: "d3", title: "Lent for class funds", amount: 1200000, type: "LENT", status: "PENDING", date: "Jun 28, 2026", dueDate: "Jul 05, 2026", wallet: "Techcombank" },
-    ]
-  },
-  {
-    id: "p3",
-    name: "Vy",
-    totalLent: 3000000,
-    totalBorrowed: 0,
-    debts: [
-      { id: "d4", title: "Lent for home rent", amount: 3000000, type: "LENT", status: "OVERDUE", date: "May 10, 2026", dueDate: "Jun 10, 2026", wallet: "Techcombank" },
-      { id: "d5", title: "Lent for milk tea", amount: 65000, type: "LENT", status: "COMPLETED", date: "May 08, 2026", wallet: "MoMo Wallet" }
-    ]
-  }
-];
-
 export default function DebtsPage() {
-  const [partners] = useState<Partner[]>(MOCK_PARTNERS);
+  const { user } = useAuth();
+  const [partners, setPartners] = useState<Partner[]>([]);
   const [selectedPartner, setSelectedPartner] = useState<Partner | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [isAddPartnerOpen, setIsAddPartnerOpen] = useState(false);
+  const [newPartnerName, setNewPartnerName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  // Load partners and transactions from DB
+  const fetchDebtData = async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      // 1. Fetch debt partners
+      const { data: partnersData, error: partnersErr } = await supabase
+        .from("debt_partners")
+        .select("*")
+        .order("name", { ascending: true });
+
+      if (partnersErr) throw partnersErr;
+
+      // 2. Fetch debt transactions
+      const { data: txsData, error: txsErr } = await supabase
+        .from("transactions")
+        .select(`
+          *,
+          wallets (name)
+        `)
+        .in("type", ["DEBT_LENT", "DEBT_BORROWED", "DEBT_REPAYMENT"])
+        .order("created_at", { ascending: false });
+
+      if (txsErr) throw txsErr;
+
+      // 3. Map transactions to partners
+      const mappedPartners: Partner[] = (partnersData || []).map((p: any) => {
+        const partnerTxs = (txsData || [])
+          .filter((tx: any) => tx.debt_partner_id === p.id)
+          .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        
+        const debtsList: DebtItem[] = [];
+
+        partnerTxs.forEach((tx: any) => {
+          if (tx.type === "DEBT_LENT" || tx.type === "DEBT_BORROWED") {
+            const dateStr = new Date(tx.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+            const dueDateStr = tx.due_date ? new Date(tx.due_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : undefined;
+            
+            let status: "PENDING" | "COMPLETED" | "OVERDUE" = tx.status === "COMPLETED" ? "COMPLETED" : "PENDING";
+            if (status === "PENDING" && tx.due_date && new Date(tx.due_date).getTime() < Date.now()) {
+              status = "OVERDUE";
+            }
+
+            // Find if there is a matching repayment that has linked this debt
+            let repaidDate: string | undefined = undefined;
+            let repayWallet: string | undefined = undefined;
+
+            if (tx.repaid_by_transaction_id) {
+              const repaymentTx = partnerTxs.find((r: any) => r.id === tx.repaid_by_transaction_id);
+              if (repaymentTx) {
+                repaidDate = new Date(repaymentTx.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+                repayWallet = repaymentTx.wallets?.name || "Unknown Wallet";
+              }
+            }
+
+            debtsList.push({
+              id: tx.id,
+              title: tx.description || (tx.type === "DEBT_LENT" ? "Lent money" : "Borrowed money"),
+              amount: Number(tx.amount),
+              type: tx.type === "DEBT_LENT" ? "LENT" : "BORROWED",
+              status,
+              date: dateStr,
+              dueDate: dueDateStr,
+              wallet: tx.wallets?.name || "Unknown Wallet",
+              repaidDate,
+              repayWallet,
+              repaid_by_transaction_id: tx.repaid_by_transaction_id,
+              isOrphanRepayment: false,
+              rawDate: new Date(tx.created_at)
+            } as any);
+          } else if (tx.type === "DEBT_REPAYMENT") {
+            // Find if there is any debt transaction pointing to this repayment ID
+            const isMatched = partnerTxs.some((d: any) => d.repaid_by_transaction_id === tx.id);
+            if (!isMatched) {
+              const dateStr = new Date(tx.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+              debtsList.push({
+                id: tx.id,
+                title: tx.description || "Repayment",
+                amount: Number(tx.amount),
+                type: tx.description?.toLowerCase().includes("repaid me") || 
+                      tx.description?.toLowerCase().includes("trả nợ cho mình") || 
+                      tx.description?.toLowerCase().includes("trả nợ mình") ? "LENT" : "BORROWED",
+                status: "COMPLETED",
+                date: dateStr,
+                wallet: tx.wallets?.name || "Unknown Wallet",
+                isOrphanRepayment: true,
+                rawDate: new Date(tx.created_at)
+              } as any);
+            }
+          }
+        });
+
+        const totalLent = debtsList
+          .filter(d => d.type === "LENT" && d.status !== "COMPLETED" && !d.repaidDate)
+          .reduce((sum, d) => sum + d.amount, 0);
+
+        const totalBorrowed = debtsList
+          .filter(d => d.type === "BORROWED" && d.status !== "COMPLETED" && !d.repaidDate)
+          .reduce((sum, d) => sum + d.amount, 0);
+
+        const sortedDebts = debtsList.sort((a: any, b: any) => b.rawDate.getTime() - a.rawDate.getTime());
+
+        return {
+          id: p.id,
+          name: p.name,
+          totalLent,
+          totalBorrowed,
+          debts: sortedDebts
+        };
+      });
+
+      setPartners(mappedPartners);
+      
+      // Update selected partner if open
+      if (selectedPartner) {
+        const updated = mappedPartners.find(mp => mp.id === selectedPartner.id);
+        if (updated) setSelectedPartner(updated);
+      }
+
+    } catch (err) {
+      console.error("Error fetching debt data:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user) {
+      fetchDebtData();
+    }
+  }, [user]);
+
+  const handleAddPartner = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedName = newPartnerName.trim();
+    if (!trimmedName || !user || submitting) return;
+    setSubmitting(true);
+    try {
+      const { data: existing, error: checkErr } = await supabase
+        .from("debt_partners")
+        .select("id")
+        .eq("user_id", user.id)
+        .ilike("name", trimmedName);
+
+      if (checkErr) throw checkErr;
+      if (existing && existing.length > 0) {
+        alert("A contact with this name already exists.");
+        setSubmitting(false);
+        return;
+      }
+
+      const { error } = await supabase
+        .from("debt_partners")
+        .insert({
+          user_id: user.id,
+          name: trimmedName
+        });
+
+      if (error) throw error;
+      setNewPartnerName("");
+      setIsAddPartnerOpen(false);
+      fetchDebtData();
+    } catch (err) {
+      console.error("Error adding debt partner:", err);
+      alert("Failed to add contact: " + (err as any).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   // Totals
   const grandTotalLent = partners.reduce((sum, p) => sum + p.totalLent, 0);
@@ -78,12 +230,12 @@ export default function DebtsPage() {
     return val.toLocaleString("en-US") + " VND";
   };
 
-  const getStatusBadge = (status: "PENDING" | "COMPLETED" | "OVERDUE") => {
+  const getStatusBadge = (status: "PENDING" | "COMPLETED" | "OVERDUE", repaidDate?: string) => {
     switch (status) {
       case "COMPLETED":
         return (
           <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-            <CheckCircle2 className="h-2.5 w-2.5" /> Paid
+            <CheckCircle2 className="h-2.5 w-2.5" /> Paid {repaidDate ? `on ${repaidDate}` : ""}
           </span>
         );
       case "OVERDUE":
@@ -100,6 +252,15 @@ export default function DebtsPage() {
         );
     }
   };
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center py-20 text-xs text-muted-foreground">
+        <Loader2 className="h-6 w-6 animate-spin text-emerald-500 mb-2" />
+        <span>Loading debt information...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 space-y-6 relative text-foreground">
@@ -137,7 +298,10 @@ export default function DebtsPage() {
       <div className="space-y-3">
         <div className="flex items-center justify-between px-1">
           <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Debt Contacts ({partners.length})</h3>
-          <button className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-xl flex items-center gap-1 hover:bg-emerald-500/20 cursor-pointer">
+          <button 
+            onClick={() => setIsAddPartnerOpen(true)}
+            className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-xl flex items-center gap-1 hover:bg-emerald-500/20 cursor-pointer"
+          >
             <Plus className="h-3 w-3" /> Add Contact
           </button>
         </div>
@@ -191,91 +355,158 @@ export default function DebtsPage() {
 
       {/* 3. DETAILS OVERLAY MODAL */}
       {selectedPartner && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[85%] overflow-y-auto space-y-5 animate-scale-up">
-            
-            {/* Header Modal */}
-            <div className="flex items-center justify-between pb-3 border-b border-border">
-              <div className="flex items-center gap-2.5">
-                <div className="h-8 w-8 rounded-full bg-accent flex items-center justify-center text-muted-foreground">
-                  <User className="h-4 w-4" />
+        <Portal>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+            <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[85%] overflow-y-auto space-y-5 animate-scale-up">
+              
+              {/* Header Modal */}
+              <div className="flex items-center justify-between pb-3 border-b border-border">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-8 w-8 rounded-full bg-accent flex items-center justify-center text-muted-foreground">
+                    <User className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold">{selectedPartner.name}</h3>
+                    <span className="text-[9px] text-muted-foreground font-medium">Debt History Details</span>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-xs font-bold">{selectedPartner.name}</h3>
-                  <span className="text-[9px] text-muted-foreground font-medium">Debt History Details</span>
+                <button
+                  onClick={() => setSelectedPartner(null)}
+                  className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Total Balance Breakdown */}
+              <div className="grid grid-cols-2 gap-3 p-3.5 bg-background border border-border rounded-2xl text-xs">
+                <div className="text-left">
+                  <span className="text-muted-foreground block text-[9px] uppercase">Lent (To Collect)</span>
+                  <span className="font-bold text-emerald-500 font-heading block mt-0.5">
+                    {formatCurrency(selectedPartner.totalLent)}
+                  </span>
+                </div>
+                <div className="text-left">
+                  <span className="text-muted-foreground block text-[9px] uppercase">Borrowed (To Repay)</span>
+                  <span className="font-bold text-rose-500 font-heading block mt-0.5">
+                    {formatCurrency(selectedPartner.totalBorrowed)}
+                  </span>
                 </div>
               </div>
-              <button
-                onClick={() => setSelectedPartner(null)}
-                className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
 
-            {/* Total Balance Breakdown */}
-            <div className="grid grid-cols-2 gap-3 p-3.5 bg-background border border-border rounded-2xl text-xs">
-              <div className="text-left">
-                <span className="text-muted-foreground block text-[9px] uppercase">Lent (To Collect)</span>
-                <span className="font-bold text-emerald-500 font-heading block mt-0.5">
-                  {formatCurrency(selectedPartner.totalLent)}
-                </span>
-              </div>
-              <div className="text-left">
-                <span className="text-muted-foreground block text-[9px] uppercase">Borrowed (To Repay)</span>
-                <span className="font-bold text-rose-500 font-heading block mt-0.5">
-                  {formatCurrency(selectedPartner.totalBorrowed)}
-                </span>
-              </div>
-            </div>
-
-            {/* Debt History ledger */}
-            <div className="space-y-3">
-              <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-1">Debt Ledger History</h4>
-              <div className="space-y-2">
-                {selectedPartner.debts.map((debt) => {
-                  const isLent = debt.type === "LENT";
-                  return (
-                    <div 
-                      key={debt.id} 
-                      className="p-3.5 rounded-2xl bg-background border border-border space-y-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h5 className="text-xs font-bold">{debt.title}</h5>
-                          <div className="flex items-center gap-1.5 mt-1 text-[9px] text-muted-foreground">
-                            <Calendar className="h-3 w-3" />
-                            <span>{debt.date}</span>
+              {/* Debt History ledger */}
+              <div className="space-y-3">
+                <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-1">Debt Ledger History</h4>
+                <div className="space-y-2">
+                  {selectedPartner.debts.map((debt) => {
+                    const isLent = debt.type === "LENT";
+                    return (
+                      <div 
+                        key={debt.id} 
+                        className="p-3.5 rounded-2xl bg-background border border-border space-y-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h5 className="text-xs font-bold">{debt.title}</h5>
+                            <div className="flex items-center gap-1.5 mt-1 text-[9px] text-muted-foreground">
+                              <Calendar className="h-3 w-3" />
+                              <span>{debt.date}</span>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <span className={`text-xs font-extrabold font-heading ${isLent ? "text-emerald-500" : "text-rose-500"}`}>
+                              {isLent ? "+" : "-"}{formatCurrency(debt.amount)}
+                            </span>
+                            <span className="text-[9px] text-muted-foreground block mt-0.5">{isLent ? "Lent" : "Borrowed"}</span>
                           </div>
                         </div>
-                        <div className="text-right">
-                          <span className={`text-xs font-extrabold font-heading ${isLent ? "text-emerald-500" : "text-rose-500"}`}>
-                            {isLent ? "+" : "-"}{formatCurrency(debt.amount)}
-                          </span>
-                          <span className="text-[9px] text-muted-foreground block mt-0.5">{isLent ? "Lent" : "Borrowed"}</span>
-                        </div>
-                      </div>
 
-                      {/* Wallet and Status info footer */}
-                      <div className="pt-2.5 border-t border-border flex items-center justify-between text-[10px]">
-                        <div className="flex items-center gap-1 text-muted-foreground">
-                          <Wallet className="h-3 w-3" />
-                          <span>Wallet: {debt.wallet}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {debt.dueDate && debt.status !== "COMPLETED" && (
-                            <span className="text-muted-foreground text-[9px]">Due: {debt.dueDate}</span>
-                          )}
-                          {getStatusBadge(debt.status)}
+                        {/* Wallet and Status info footer */}
+                        <div className="pt-2.5 border-t border-border flex items-center justify-between text-[10px]">
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <Wallet className="h-3 w-3" />
+                            <span>
+                              Wallet: <strong className="text-foreground/80">{debt.wallet}</strong>
+                              {debt.repayWallet && (
+                                <span className="text-muted-foreground font-normal">
+                                  {" "}→ Repaid via: <strong className="text-foreground">{debt.repayWallet}</strong>
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {debt.dueDate && debt.status !== "COMPLETED" && (
+                              <span className="text-muted-foreground text-[9px]">Due: {debt.dueDate}</span>
+                            )}
+                            {getStatusBadge(debt.status, debt.repaidDate)}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        </Portal>
+      )}
+
+      {/* 4. ADD PARTNER OVERLAY MODAL */}
+      {isAddPartnerOpen && (
+        <Portal>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+            <form 
+              onSubmit={handleAddPartner}
+              className="w-full max-w-sm bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-border">
+                <h3 className="text-sm font-bold font-heading">Add Debt Contact</h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddPartnerOpen(false);
+                    setNewPartnerName("");
+                  }}
+                  className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Contact Name</label>
+                <input
+                  type="text"
+                  required
+                  value={newPartnerName}
+                  onChange={(e) => setNewPartnerName(e.target.value)}
+                  placeholder="e.g. Anh Huy, Nam, Vy"
+                  className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-3 border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddPartnerOpen(false);
+                    setNewPartnerName("");
+                  }}
+                  className="flex-1 py-2 rounded-xl bg-accent border border-border text-muted-foreground hover:text-foreground font-semibold transition-colors cursor-pointer text-xs text-center"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-xs text-center flex items-center justify-center"
+                >
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Add Contact"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </Portal>
       )}
 
     </div>

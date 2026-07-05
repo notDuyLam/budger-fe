@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/shared/AuthProvider";
+import Portal from "@/components/shared/Portal";
 
 interface Wallet {
   id: string;
@@ -582,165 +583,169 @@ export default function Dashboard() {
 
       {/* --- ADD / EDIT WALLET MODAL --- */}
       {isAddWalletOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <form 
-            onSubmit={handleAddWallet}
-            className="w-full max-w-md bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground font-sans"
-          >
-            <div className="flex items-center justify-between pb-3 border-b border-border">
-              <h3 className="text-sm font-bold font-heading">Add New Account/Wallet</h3>
-              <button
-                type="button"
-                onClick={() => setIsAddWalletOpen(false)}
-                className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+        <Portal>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+            <form 
+              onSubmit={handleAddWallet}
+              className="w-full max-w-md bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground font-sans"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-border">
+                <h3 className="text-sm font-bold font-heading">Add New Account/Wallet</h3>
+                <button
+                  type="button"
+                  onClick={() => setIsAddWalletOpen(false)}
+                  className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
 
-            <div className="space-y-1">
-              <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Name</label>
-              <input
-                type="text"
-                required
-                value={walletName}
-                onChange={(e) => setWalletName(e.target.value)}
-                placeholder="e.g. Cash, Techcombank, momo"
-                className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
-              />
-            </div>
+              <div className="space-y-1">
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Name</label>
+                <input
+                  type="text"
+                  required
+                  value={walletName}
+                  onChange={(e) => setWalletName(e.target.value)}
+                  placeholder="e.g. Cash, Techcombank, momo"
+                  className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                />
+              </div>
 
-            <div className="space-y-1">
-              <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Starting Balance (VND)</label>
-              <input
-                type="number"
-                value={startingBalance}
-                onChange={(e) => setStartingBalance(e.target.value)}
-                placeholder="e.g. 1000000"
-                className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
-              />
-            </div>
+              <div className="space-y-1">
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Starting Balance (VND)</label>
+                <input
+                  type="number"
+                  value={startingBalance}
+                  onChange={(e) => setStartingBalance(e.target.value)}
+                  placeholder="e.g. 1000000"
+                  className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                />
+              </div>
 
-            <div className="flex gap-2 pt-3 border-t border-border">
-              <button
-                type="button"
-                onClick={() => setIsAddWalletOpen(false)}
-                className="flex-1 py-2 rounded-xl bg-accent border border-border text-muted-foreground hover:text-foreground font-semibold transition-colors cursor-pointer text-xs"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={submitting}
-                className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-bold transition-all disabled:opacity-50 cursor-pointer text-xs flex items-center justify-center"
-              >
-                {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
-              </button>
-            </div>
-          </form>
-        </div>
+              <div className="flex gap-2 pt-3 border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => setIsAddWalletOpen(false)}
+                  className="flex-1 py-2 rounded-xl bg-accent border border-border text-muted-foreground hover:text-foreground font-semibold transition-colors cursor-pointer text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-bold transition-all disabled:opacity-50 cursor-pointer text-xs flex items-center justify-center"
+                >
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </Portal>
       )}
 
       {/* --- MANAGE WALLETS MODAL --- */}
       {isManageWalletsOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[80%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
-            <div className="flex items-center justify-between pb-3 border-b border-border">
-              <h3 className="text-sm font-bold font-heading">Manage Accounts & Wallets</h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsManageWalletsOpen(false);
-                  setEditingWallet(null);
-                  setWalletName("");
-                }}
-                className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {editingWallet ? (
-              /* Rename Sub-form */
-              <form onSubmit={handleUpdateWallet} className="p-4 bg-background border border-border rounded-2xl space-y-3">
-                <h4 className="text-xs font-bold">Edit Wallet Name</h4>
-                <div className="space-y-1">
-                  <input
-                    type="text"
-                    required
-                    value={walletName}
-                    onChange={(e) => setWalletName(e.target.value)}
-                    className="w-full bg-card border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
-                  />
-                </div>
-                <div className="flex justify-end gap-2 text-xs">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingWallet(null);
-                      setWalletName("");
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-accent text-muted-foreground"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={submitting}
-                    className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-bold"
-                  >
-                    {submitting ? "Saving..." : "Save"}
-                  </button>
-                </div>
-              </form>
-            ) : null}
-
-            <div className="space-y-2">
-              {wallets.map((wallet) => (
-                <div 
-                  key={wallet.id}
-                  className="flex items-center justify-between p-3.5 rounded-2xl bg-background border border-border"
+        <Portal>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+            <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[80%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
+              <div className="flex items-center justify-between pb-3 border-b border-border">
+                <h3 className="text-sm font-bold font-heading">Manage Accounts & Wallets</h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsManageWalletsOpen(false);
+                    setEditingWallet(null);
+                    setWalletName("");
+                  }}
+                  className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
                 >
-                  <div>
-                    <h4 className="text-xs font-bold">{wallet.name}</h4>
-                    <span className="text-[10px] text-muted-foreground">
-                      Balance: {formatCurrency(Number(wallet.balance))}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => {
-                        setEditingWallet(wallet);
-                        setWalletName(wallet.name);
-                      }}
-                      className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                    >
-                      <Edit2 className="h-3.5 w-3.5" />
-                    </button>
-                    
-                    {wallet.name !== "Ví tiền mặt" && (
-                      <button
-                        onClick={() => handleDeleteWallet(wallet.id)}
-                        className="p-2 rounded-xl text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
 
-            <div className="pt-3 border-t border-border flex justify-end">
-              <button
-                onClick={() => setIsManageWalletsOpen(false)}
-                className="px-4 py-2 rounded-xl bg-accent text-xs font-semibold cursor-pointer"
-              >
-                Close
-              </button>
+              {editingWallet ? (
+                /* Rename Sub-form */
+                <form onSubmit={handleUpdateWallet} className="p-4 bg-background border border-border rounded-2xl space-y-3">
+                  <h4 className="text-xs font-bold">Edit Wallet Name</h4>
+                  <div className="space-y-1">
+                    <input
+                      type="text"
+                      required
+                      value={walletName}
+                      onChange={(e) => setWalletName(e.target.value)}
+                      className="w-full bg-card border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingWallet(null);
+                        setWalletName("");
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-accent text-muted-foreground"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-bold"
+                    >
+                      {submitting ? "Saving..." : "Save"}
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+
+              <div className="space-y-2">
+                {wallets.map((wallet) => (
+                  <div 
+                    key={wallet.id}
+                    className="flex items-center justify-between p-3.5 rounded-2xl bg-background border border-border"
+                  >
+                    <div>
+                      <h4 className="text-xs font-bold">{wallet.name}</h4>
+                      <span className="text-[10px] text-muted-foreground">
+                        Balance: {formatCurrency(Number(wallet.balance))}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          setEditingWallet(wallet);
+                          setWalletName(wallet.name);
+                        }}
+                        className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                      >
+                        <Edit2 className="h-3.5 w-3.5" />
+                      </button>
+                      
+                      {wallet.name !== "Ví tiền mặt" && (
+                        <button
+                          onClick={() => handleDeleteWallet(wallet.id)}
+                          className="p-2 rounded-xl text-rose-550 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="pt-3 border-t border-border flex justify-end">
+                <button
+                  onClick={() => setIsManageWalletsOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-accent text-xs font-semibold cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        </Portal>
       )}
 
     </div>
