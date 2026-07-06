@@ -9,12 +9,21 @@ import {
   Coffee, 
   ShoppingBag, 
   Home, 
+  Car,
+  Activity,
+  BookOpen,
+  Gamepad2,
+  DollarSign,
+  TrendingUp,
+  Gift,
+  HelpCircle,
   RefreshCw,
   Sliders,
   Loader2
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/shared/AuthProvider";
+import { Select } from "@/components/ui/select";
 
 interface TransactionItem {
   id: string;
@@ -26,11 +35,28 @@ interface TransactionItem {
   note?: string;
 }
 
+const getCategoryIconComponent = (iconName?: string | null) => {
+  switch (iconName) {
+    case "Coffee": return Coffee;
+    case "ShoppingBag": return ShoppingBag;
+    case "Home": return Home;
+    case "Car": return Car;
+    case "Activity": return Activity;
+    case "BookOpen": return BookOpen;
+    case "Gamepad2": return Gamepad2;
+    case "DollarSign": return DollarSign;
+    case "TrendingUp": return TrendingUp;
+    case "Gift": return Gift;
+    default: return HelpCircle;
+  }
+};
+
 export default function AnalyticsPage() {
   const { user } = useAuth();
   const [transactions, setTransactions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<"this_week" | "this_month" | "last_month">("this_month");
+  const [chartType, setChartType] = useState<"EXPENSE" | "INCOME">("EXPENSE");
   const [selectedCategoryName, setSelectedCategoryName] = useState<string | null>(null);
 
   // Fetch transactions of type INCOME & EXPENSE
@@ -42,7 +68,7 @@ export default function AnalyticsPage() {
         .from("transactions")
         .select(`
           *,
-          categories (name)
+          categories (name, icon)
         `)
         .in("type", ["INCOME", "EXPENSE"])
         .order("created_at", { ascending: false });
@@ -66,12 +92,6 @@ export default function AnalyticsPage() {
     return val.toLocaleString("en-US") + " VND";
   };
 
-  const getPeriodLabel = () => {
-    if (period === "this_week") return "This Week";
-    if (period === "this_month") return "This Month";
-    return "Last Month";
-  };
-
   // Helper to determine start and end dates for the selected period
   const getPeriodRange = (p: "this_week" | "this_month" | "last_month") => {
     const now = new Date();
@@ -79,7 +99,6 @@ export default function AnalyticsPage() {
     let end = new Date();
 
     if (p === "this_week") {
-      // Current calendar week (Monday 00:00 to now)
       const day = now.getDay();
       const diff = now.getDate() - day + (day === 0 ? -6 : 1);
       start = new Date(now.setDate(diff));
@@ -96,29 +115,30 @@ export default function AnalyticsPage() {
     return { start, end };
   };
 
-  const getCategoryStyles = (name: string, index: number) => {
+  const getCategoryStyles = (name: string, index: number, iconName?: string | null) => {
     const lowercaseName = name.toLowerCase();
+    const resolvedIcon = iconName ? getCategoryIconComponent(iconName) : null;
     
     if (lowercaseName.includes("dining") || lowercaseName.includes("ăn uống") || lowercaseName.includes("coffee") || lowercaseName.includes("cafe")) {
-      return { color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-500", stroke: "#10b981", icon: Coffee };
+      return { color: "text-emerald-500 dark:text-emerald-400", bg: "bg-emerald-500", stroke: "#10b981", icon: resolvedIcon || Coffee };
     }
     if (lowercaseName.includes("shopping") || lowercaseName.includes("mua sắm")) {
-      return { color: "text-indigo-500 dark:text-indigo-400", bg: "bg-indigo-500", stroke: "#6366f1", icon: ShoppingBag };
+      return { color: "text-indigo-500 dark:text-indigo-400", bg: "bg-indigo-500", stroke: "#6366f1", icon: resolvedIcon || ShoppingBag };
     }
     if (lowercaseName.includes("transport") || lowercaseName.includes("di chuyển") || lowercaseName.includes("xe") || lowercaseName.includes("grab")) {
-      return { color: "text-amber-500 dark:text-amber-400", bg: "bg-amber-500", stroke: "#f59e0b", icon: Sliders };
+      return { color: "text-amber-500 dark:text-amber-400", bg: "bg-amber-500", stroke: "#f59e0b", icon: resolvedIcon || Car };
     }
     if (lowercaseName.includes("housing") || lowercaseName.includes("tiền nhà") || lowercaseName.includes("rent") || lowercaseName.includes("điện nước")) {
-      return { color: "text-rose-500 dark:text-rose-400", bg: "bg-rose-500", stroke: "#f43f5e", icon: Home };
+      return { color: "text-rose-500 dark:text-rose-400", bg: "bg-rose-500", stroke: "#f43f5e", icon: resolvedIcon || Home };
     }
     
     const fallbackThemes = [
-      { color: "text-teal-500 dark:text-teal-400", bg: "bg-teal-500", stroke: "#14b8a6", icon: Sliders },
-      { color: "text-cyan-500 dark:text-cyan-400", bg: "bg-cyan-500", stroke: "#06b6d4", icon: Sliders },
-      { color: "text-sky-500 dark:text-sky-400", bg: "bg-sky-500", stroke: "#0ea5e9", icon: Sliders },
-      { color: "text-purple-500 dark:text-purple-400", bg: "bg-purple-500", stroke: "#a855f7", icon: Sliders },
-      { color: "text-fuchsia-500 dark:text-fuchsia-400", bg: "bg-fuchsia-500", stroke: "#d946ef", icon: Sliders },
-      { color: "text-orange-500 dark:text-orange-400", bg: "bg-orange-500", stroke: "#f97316", icon: Sliders },
+      { color: "text-teal-500 dark:text-teal-400", bg: "bg-teal-500", stroke: "#14b8a6", icon: resolvedIcon || Sliders },
+      { color: "text-cyan-500 dark:text-cyan-400", bg: "bg-cyan-500", stroke: "#06b6d4", icon: resolvedIcon || Sliders },
+      { color: "text-sky-500 dark:text-sky-400", bg: "bg-sky-500", stroke: "#0ea5e9", icon: resolvedIcon || Sliders },
+      { color: "text-purple-500 dark:text-purple-400", bg: "bg-purple-500", stroke: "#a855f7", icon: resolvedIcon || Sliders },
+      { color: "text-fuchsia-500 dark:text-fuchsia-400", bg: "bg-fuchsia-500", stroke: "#d946ef", icon: resolvedIcon || Sliders },
+      { color: "text-orange-500 dark:text-orange-400", bg: "bg-orange-500", stroke: "#f97316", icon: resolvedIcon || Sliders },
     ];
     
     return fallbackThemes[index % fallbackThemes.length];
@@ -145,20 +165,26 @@ export default function AnalyticsPage() {
     .filter((t) => t.type === "EXPENSE")
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
-  // Group Expenses by Category
-  const categoryMap: { [name: string]: number } = {};
+  const totalForChart = chartType === "EXPENSE" ? totalExpense : totalIncome;
+
+  // Group Transactions by Category based on chartType
+  const categoryMap: { [name: string]: { amount: number; icon?: string | null } } = {};
   periodTxs
-    .filter((t) => t.type === "EXPENSE")
+    .filter((t) => t.type === chartType)
     .forEach((tx) => {
       const catName = tx.categories?.name || "Uncategorized";
-      categoryMap[catName] = (categoryMap[catName] || 0) + Number(tx.amount);
+      const icon = tx.categories?.icon;
+      if (!categoryMap[catName]) {
+        categoryMap[catName] = { amount: 0, icon };
+      }
+      categoryMap[catName].amount += Number(tx.amount);
     });
 
   // Transform Category Map to Display format
   const categoriesList = Object.keys(categoryMap).map((name, idx) => {
-    const amount = categoryMap[name];
-    const percentage = totalExpense > 0 ? Math.round((amount / totalExpense) * 100) : 0;
-    const styles = getCategoryStyles(name, idx);
+    const { amount, icon } = categoryMap[name];
+    const percentage = totalForChart > 0 ? Math.round((amount / totalForChart) * 100) : 0;
+    const styles = getCategoryStyles(name, idx, icon);
     return {
       id: `cat-${idx}`,
       name,
@@ -169,17 +195,17 @@ export default function AnalyticsPage() {
   }).sort((a, b) => b.amount - a.amount);
 
   // Filtered transactions for the detail list at bottom
-  const rawFilteredTransactions = periodTxs.filter((t) => t.type === "EXPENSE");
+  const rawFilteredTransactions = periodTxs.filter((t) => t.type === chartType);
   const filteredDetailedTransactions = selectedCategoryName
     ? rawFilteredTransactions.filter((t) => (t.categories?.name || "Uncategorized") === selectedCategoryName)
     : rawFilteredTransactions;
 
   const detailedTransactionsList = filteredDetailedTransactions.map((tx, idx) => {
     const catName = tx.categories?.name || "Uncategorized";
-    const styles = getCategoryStyles(catName, idx);
+    const styles = getCategoryStyles(catName, idx, tx.categories?.icon);
     return {
       id: tx.id,
-      title: tx.description || "Expense",
+      title: tx.description || (chartType === "EXPENSE" ? "Expense" : "Income"),
       amount: Number(tx.amount),
       category: catName,
       time: getTxTimeStr(tx.created_at),
@@ -188,7 +214,7 @@ export default function AnalyticsPage() {
     };
   });
 
-  // Calculate Bar Chart Data (Daily for this_week, Weekly for this_month/last_month)
+  // Calculate Bar Chart Data
   const getWeeklyBars = () => {
     const barsList: { label: string; income: number; expense: number }[] = [];
     const now = new Date();
@@ -268,32 +294,26 @@ export default function AnalyticsPage() {
   return (
     <div className="flex-1 space-y-6 relative text-foreground">
       
-      {/* 1. REPORT PERIOD SELECTOR */}
+      {/* 1. REPORT PERIOD SELECTOR USING PREMIUM SELECT */}
       <div className="flex items-center justify-between">
-        <div className="relative">
-          <button className="flex items-center gap-1.5 px-3 py-2 bg-card border border-border rounded-xl text-xs font-semibold hover:text-emerald-500 transition-colors">
-            <Calendar className="h-3.5 w-3.5 text-emerald-500" />
-            <span>Period: {getPeriodLabel()}</span>
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
-          </button>
-          
-          <select 
+        <div className="w-48">
+          <Select
             value={period}
-            onChange={(e) => {
-              setPeriod(e.target.value as any);
+            onValueChange={(val) => {
+              setPeriod(val as any);
               setSelectedCategoryName(null);
             }}
-            className="absolute inset-0 opacity-0 cursor-pointer"
-          >
-            <option value="this_week">This Week</option>
-            <option value="this_month">This Month</option>
-            <option value="last_month">Last Month</option>
-          </select>
+            options={[
+              { value: "this_week", label: "This Week" },
+              { value: "this_month", label: "This Month" },
+              { value: "last_month", label: "Last Month" }
+            ]}
+          />
         </div>
 
         <button 
           onClick={fetchAnalyticsData}
-          className="p-2 rounded-xl bg-card border border-border text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          className="p-2.5 rounded-xl bg-card border border-border text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
         >
           <RefreshCw className="h-3.5 w-3.5" />
         </button>
@@ -330,18 +350,47 @@ export default function AnalyticsPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         
         {/* PIE DONUT CHART CARD */}
-        <div className="rounded-3xl bg-card border border-border p-5 space-y-4 shadow-sm">
-          <div className="text-center">
-            <h4 className="text-xs font-bold uppercase tracking-wider">Expense Breakdown by Category</h4>
-            <p className="text-[10px] text-muted-foreground mt-0.5">Click segments or labels below to filter transactions</p>
+        <div className="rounded-3xl bg-card border border-border p-5 space-y-4 shadow-sm relative">
+          
+          {/* Header & Toggle Switch */}
+          <div className="flex justify-between items-center border-b border-border pb-3.5">
+            <div className="text-left">
+              <h4 className="text-xs font-bold uppercase tracking-wider">Breakdown structure</h4>
+              <p className="text-[9px] text-muted-foreground mt-0.5">Click segments to filter details</p>
+            </div>
+            
+            <div className="flex p-0.5 bg-accent border border-border rounded-xl text-[9px] font-bold select-none">
+              <button 
+                type="button"
+                onClick={() => {
+                  setChartType("EXPENSE");
+                  setSelectedCategoryName(null);
+                }}
+                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                  chartType === "EXPENSE" ? "bg-card text-rose-500 shadow-sm font-extrabold" : "text-muted-foreground"
+                }`}
+              >
+                Expense
+              </button>
+              <button 
+                type="button"
+                onClick={() => {
+                  setChartType("INCOME");
+                  setSelectedCategoryName(null);
+                }}
+                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                  chartType === "INCOME" ? "bg-card text-emerald-500 shadow-sm font-extrabold" : "text-muted-foreground"
+                }`}
+              >
+                Income
+              </button>
+            </div>
           </div>
 
           <div className="flex justify-center items-center py-2 relative">
             <svg width="160" height="160" viewBox="0 0 42 42" className="transform -rotate-90 select-none">
-              {/* Background circle */}
               <circle cx="21" cy="21" r="15.915" fill="transparent" stroke="currentColor" strokeWidth="4.5" className="text-slate-100 dark:text-slate-800/80" />
               
-              {/* Donut chart segments dynamically computed */}
               {(() => {
                 let cumulativePercentage = 0;
                 return categoriesList.map((cat) => {
@@ -368,15 +417,19 @@ export default function AnalyticsPage() {
                 });
               })()}
 
-              {totalExpense === 0 && (
+              {totalForChart === 0 && (
                 <circle cx="21" cy="21" r="15.915" fill="transparent" stroke="currentColor" strokeWidth="4.5" className="text-slate-200 dark:text-slate-800" />
               )}
             </svg>
 
             {/* Total value displayed inside donut center */}
             <div className="absolute text-center flex flex-col items-center">
-              <span className="text-[9px] text-muted-foreground uppercase font-semibold">Spent</span>
-              <span className="text-xs font-bold font-heading">{formatCurrency(totalExpense)}</span>
+              <span className="text-[9px] text-muted-foreground uppercase font-semibold">
+                {chartType === "EXPENSE" ? "Spent" : "Earned"}
+              </span>
+              <span className={`text-xs font-bold font-heading ${chartType === "EXPENSE" ? "text-rose-500" : "text-emerald-500"}`}>
+                {formatCurrency(totalForChart)}
+              </span>
             </div>
           </div>
 
@@ -403,7 +456,9 @@ export default function AnalyticsPage() {
               );
             })}
             {categoriesList.length === 0 && (
-              <span className="col-span-2 text-center text-[10px] text-muted-foreground py-2">No expenses in this period</span>
+              <span className="col-span-2 text-center text-[10px] text-muted-foreground py-2">
+                No items in this period
+              </span>
             )}
           </div>
         </div>
@@ -460,7 +515,7 @@ export default function AnalyticsPage() {
       <div className="space-y-3">
         <div className="flex items-center justify-between px-1">
           <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-            {selectedCategoryName ? `Category details: ${selectedCategoryName}` : "All Expenditure Details"}
+            {selectedCategoryName ? `Category details: ${selectedCategoryName}` : `All ${chartType === "EXPENSE" ? "Expenditure" : "Income"} Details`}
           </h3>
           {selectedCategoryName && (
             <button 
@@ -478,10 +533,12 @@ export default function AnalyticsPage() {
             return (
               <div 
                 key={tx.id} 
-                className="flex items-center justify-between p-3.5 rounded-2xl bg-card border border-border hover:border-muted-foreground/30 transition-all"
+                className="flex items-center justify-between p-3.5 rounded-2xl bg-card border border-border hover:border-muted-foreground/30 transition-all text-foreground"
               >
                 <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-background border border-border text-rose-500">
+                  <div className={`p-2.5 rounded-xl bg-background border border-border ${
+                    chartType === "EXPENSE" ? "text-rose-500" : "text-emerald-500"
+                  }`}>
                     <TxIcon className="h-4 w-4" />
                   </div>
                   <div>
@@ -496,7 +553,9 @@ export default function AnalyticsPage() {
                   </div>
                 </div>
                 <div className="text-right">
-                  <span className="text-xs font-bold font-heading text-rose-500">
+                  <span className={`text-xs font-bold font-heading ${
+                    chartType === "EXPENSE" ? "text-rose-500" : "text-emerald-500"
+                  }`}>
                     {formatCurrency(tx.amount)}
                   </span>
                   <span className="text-[9px] text-muted-foreground block mt-0.5">{tx.category}</span>
@@ -515,4 +574,3 @@ export default function AnalyticsPage() {
     </div>
   );
 }
-

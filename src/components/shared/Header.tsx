@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { Bell, User, Sun, Moon, LogOut } from "lucide-react";
 import { useAuth } from "@/components/shared/AuthProvider";
@@ -9,6 +9,18 @@ export default function Header() {
   const pathname = usePathname();
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const { user, signOut } = useAuth();
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target as Node)) {
+        setShowProfileMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   useEffect(() => {
     // Sync React state with active class on html element
@@ -79,20 +91,38 @@ export default function Header() {
           <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-emerald-500" />
         </button>
 
-        {/* Profile Avatar & Display */}
-        <div className="flex items-center gap-2">
-          <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-500 dark:text-emerald-400 text-xs font-semibold">
+        {/* Profile Avatar & Interactive Dropdown Menu */}
+        <div className="relative" ref={profileMenuRef}>
+          <button
+            onClick={() => setShowProfileMenu(!showProfileMenu)}
+            className="h-8 w-8 rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-500 dark:text-emerald-400 text-xs font-semibold hover:border-emerald-500 transition-colors cursor-pointer"
+            aria-label="User profile menu"
+          >
             <User className="h-4 w-4" />
-          </div>
+          </button>
           
-          {user && (
-            <button
-              onClick={signOut}
-              title="Sign Out"
-              className="p-2 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-500 hover:bg-rose-500/20 transition-all flex items-center justify-center cursor-pointer"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
+          {showProfileMenu && user && (
+            <div className="absolute right-0 mt-2.5 w-56 bg-card border border-border rounded-2xl shadow-xl p-3 space-y-3 z-50 text-foreground animate-scale-up">
+              <div className="border-b border-border pb-2.5">
+                <span className="text-[10px] text-muted-foreground uppercase font-bold tracking-wider block">Account Info</span>
+                <span className="text-xs font-bold truncate block mt-0.5" title={user.email || ""}>
+                  {user.email || "guest@example.com"}
+                </span>
+                <span className="text-[9px] text-emerald-500 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded-full mt-1.5 inline-block">
+                  Verified User
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  setShowProfileMenu(false);
+                  signOut();
+                }}
+                className="w-full flex items-center gap-2 py-2 px-3 text-xs font-bold text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer text-left"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign Out
+              </button>
+            </div>
           )}
         </div>
       </div>

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { 
   Plus, 
   ArrowUpRight, 
@@ -10,6 +11,8 @@ import {
   Wallet as WalletIcon, 
   CreditCard,
   Smartphone,
+  PiggyBank,
+  EyeOff,
   ChevronRight,
   Coffee,
   DollarSign,
@@ -24,11 +27,16 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/shared/AuthProvider";
 import Portal from "@/components/shared/Portal";
+import { z } from "zod";
 
 interface Wallet {
   id: string;
   name: string;
   balance: number;
+  is_credit_card?: boolean;
+  is_hidden?: boolean;
+  color?: string | null;
+  icon?: string | null;
   created_at: string;
 }
 
@@ -45,8 +53,20 @@ interface Transaction {
   category_name?: string;
 }
 
+const COLOR_PALETTES = [
+  { name: "Slate/Charcoal", value: "from-slate-700 to-slate-900" },
+  { name: "Emerald/Teal", value: "from-emerald-500 to-teal-600" },
+  { name: "Blue/Indigo", value: "from-blue-500 to-indigo-600" },
+  { name: "Pink/Rose", value: "from-pink-500 to-rose-600" },
+  { name: "Purple/Violet", value: "from-purple-600 to-indigo-700" },
+  { name: "Orange/Amber", value: "from-orange-500 to-amber-600" },
+  { name: "Rose/Red", value: "from-rose-500 to-red-600" },
+  { name: "Cyan/Teal", value: "from-cyan-500 to-teal-600" },
+];
+
 export default function Dashboard() {
   const { user } = useAuth();
+  const router = useRouter();
   
   // Data States
   const [wallets, setWallets] = useState<Wallet[]>([]);
@@ -56,14 +76,19 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   // Modals / Form States
-  const [selectedWalletId, setSelectedWalletId] = useState<string | null>(null);
   const [isAddWalletOpen, setIsAddWalletOpen] = useState(false);
   const [isManageWalletsOpen, setIsManageWalletsOpen] = useState(false);
   const [editingWallet, setEditingWallet] = useState<Wallet | null>(null);
   
-  // Form values
+  // Form values & Validation Errors
   const [walletName, setWalletName] = useState("");
   const [startingBalance, setStartingBalance] = useState("");
+  const [isCreditCard, setIsCreditCard] = useState(false);
+  const [isHidden, setIsHidden] = useState(false);
+  const [selectedColor, setSelectedColor] = useState("from-emerald-500 to-teal-600");
+  const [selectedIcon, setSelectedIcon] = useState("Wallet");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  
   const [submitting, setSubmitting] = useState(false);
   const [seeding, setSeeding] = useState(false);
 
@@ -137,22 +162,32 @@ export default function Dashboard() {
     }
   };
 
-  // Helper styles based on name
-  const getWalletStyles = (name: string) => {
-    const n = name.toLowerCase();
-    if (n.includes("credit") || n.includes("tín dụng") || n.includes("card")) {
+  // Helper styles based on color/name
+  const getWalletStyles = (wallet: Wallet) => {
+    if (wallet.color) {
+      return { type: wallet.is_credit_card ? "credit" : "cash", color: wallet.color };
+    }
+    const name = wallet.name.toLowerCase();
+    if (name.includes("credit") || name.includes("tín dụng") || name.includes("card")) {
       return { type: "credit", color: "from-slate-700 to-slate-900" };
     }
-    if (n.includes("momo") || n.includes("zalo") || n.includes("shopee") || n.includes("e-wallet") || n.includes("ví")) {
+    if (name.includes("momo") || name.includes("zalo") || name.includes("shopee") || name.includes("e-wallet") || name.includes("ví")) {
       return { type: "e-wallet", color: "from-pink-500 to-rose-600" };
     }
-    if (n.includes("bank") || n.includes("techcombank") || n.includes("vcb") || n.includes("vietcombank") || n.includes("acb") || n.includes("mbbank") || n.includes("ngân hàng")) {
+    if (name.includes("bank") || name.includes("techcombank") || name.includes("vcb") || name.includes("vietcombank") || name.includes("acb") || name.includes("mbbank") || name.includes("ngân hàng")) {
       return { type: "bank", color: "from-blue-500 to-indigo-600" };
     }
     return { type: "cash", color: "from-emerald-500 to-teal-600" };
   };
 
-  const getWalletIcon = (type: string) => {
+  const getWalletIcon = (iconName: string | null | undefined, wallet: Wallet) => {
+    if (iconName === "Wallet" || iconName === "WalletIcon") return WalletIcon;
+    if (iconName === "CreditCard") return CreditCard;
+    if (iconName === "Smartphone") return Smartphone;
+    if (iconName === "PiggyBank") return PiggyBank;
+
+    // Fallback based on name/styles
+    const { type } = getWalletStyles(wallet);
     switch (type) {
       case "cash": return WalletIcon;
       case "bank": return CreditCard;
@@ -164,7 +199,7 @@ export default function Dashboard() {
   const getTxIcon = (category: string) => {
     const cat = category.toLowerCase();
     if (cat.includes("ăn uống") || cat.includes("dining") || cat.includes("coffee") || cat.includes("cafe")) return Coffee;
-    if (cat.includes("lương") || cat.includes("income") || cat.includes("lương")) return DollarSign;
+    if (cat.includes("lương") || cat.includes("income")) return DollarSign;
     if (cat.includes("nợ") || cat.includes("loans") || cat.includes("vay")) return TrendingUp;
     if (cat.includes("mua sắm") || cat.includes("shopping")) return ShoppingBag;
     if (cat.includes("trả nợ") || cat.includes("repayments")) return UserCheck;
@@ -175,48 +210,95 @@ export default function Dashboard() {
     return value.toLocaleString("en-US") + " VND";
   };
 
-  // CRUD: Add Wallet
+  // CRUD: Add Wallet with Zod Validation
   const handleAddWallet = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!walletName.trim() || !user) return;
+    if (!user) return;
+
+    const balanceVal = startingBalance ? parseFloat(startingBalance) : 0;
+
+    // Validation Schema
+    const validationSchema = z.object({
+      name: z.string().min(1, "Wallet name is required").max(50, "Wallet name must be under 50 characters"),
+      balance: isCreditCard 
+        ? z.coerce.number() 
+        : z.coerce.number().min(0, "Starting balance must be non-negative for standard wallets")
+    });
+
+    const check = validationSchema.safeParse({ name: walletName.trim(), balance: balanceVal });
+    if (!check.success) {
+      const errMap: Record<string, string> = {};
+      check.error.issues.forEach((issue) => {
+        if (issue.path[0]) errMap[issue.path[0] as string] = issue.message;
+      });
+      setErrors(errMap);
+      return;
+    }
+    setErrors({});
 
     setSubmitting(true);
     try {
-      const balanceVal = startingBalance ? parseFloat(startingBalance) : 0;
-      
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from("wallets")
         .insert({
           user_id: user.id,
           name: walletName.trim(),
-          balance: balanceVal
-        })
-        .select();
+          balance: isCreditCard ? 0 : balanceVal,
+          is_credit_card: isCreditCard,
+          is_hidden: isHidden,
+          color: selectedColor,
+          icon: selectedIcon
+        });
 
       if (error) throw error;
 
       setIsAddWalletOpen(false);
       setWalletName("");
       setStartingBalance("");
+      setIsCreditCard(false);
+      setIsHidden(false);
+      setSelectedColor("from-emerald-500 to-teal-600");
+      setSelectedIcon("Wallet");
       fetchDashboardData();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error adding wallet:", error);
+      alert(error.message || "Failed to add wallet");
     } finally {
       setSubmitting(false);
     }
   };
 
-  // CRUD: Save/Update Wallet
+  // CRUD: Save/Update Wallet with Zod Validation
   const handleUpdateWallet = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingWallet || !walletName.trim()) return;
+    if (!editingWallet || !user) return;
+
+    // Validation Schema
+    const validationSchema = z.object({
+      name: z.string().min(1, "Wallet name is required").max(50, "Wallet name must be under 50 characters")
+    });
+
+    const check = validationSchema.safeParse({ name: walletName.trim() });
+    if (!check.success) {
+      const errMap: Record<string, string> = {};
+      check.error.issues.forEach((issue) => {
+        if (issue.path[0]) errMap[issue.path[0] as string] = issue.message;
+      });
+      setErrors(errMap);
+      return;
+    }
+    setErrors({});
 
     setSubmitting(true);
     try {
       const { error } = await supabase
         .from("wallets")
         .update({
-          name: walletName.trim()
+          name: walletName.trim(),
+          is_credit_card: isCreditCard,
+          is_hidden: isHidden,
+          color: selectedColor,
+          icon: selectedIcon
         })
         .eq("id", editingWallet.id);
 
@@ -224,9 +306,14 @@ export default function Dashboard() {
 
       setEditingWallet(null);
       setWalletName("");
+      setIsCreditCard(false);
+      setIsHidden(false);
+      setSelectedColor("from-emerald-500 to-teal-600");
+      setSelectedIcon("Wallet");
       fetchDashboardData();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error updating wallet:", error);
+      alert(error.message || "Failed to update wallet");
     } finally {
       setSubmitting(false);
     }
@@ -256,9 +343,9 @@ export default function Dashboard() {
     try {
       // 1. Create Wallets
       const walletsToCreate = [
-        { name: "Techcombank", balance: 0.00, user_id: user.id },
-        { name: "MoMo Wallet", balance: 0.00, user_id: user.id },
-        { name: "Credit Card", balance: 0.00, user_id: user.id }
+        { name: "Techcombank", balance: 0.00, user_id: user.id, is_credit_card: false, color: "from-blue-500 to-indigo-600", icon: "CreditCard" },
+        { name: "MoMo Wallet", balance: 0.00, user_id: user.id, is_credit_card: false, color: "from-pink-500 to-rose-600", icon: "Smartphone" },
+        { name: "Credit Card", balance: 0.00, user_id: user.id, is_credit_card: true, color: "from-slate-700 to-slate-900", icon: "CreditCard" }
       ];
 
       const { data: createdWallets, error: walletErr } = await supabase
@@ -289,7 +376,7 @@ export default function Dashboard() {
       const diningCatId = getCatId("Ăn uống", "EXPENSE") || getCatId("Khác", "EXPENSE");
       const shoppingCatId = getCatId("Mua sắm", "EXPENSE") || getCatId("Khác", "EXPENSE");
 
-      // 3. Create Transactions (trigger will automatically calculate balances)
+      // 3. Create Transactions
       const txsToCreate = [];
 
       // Start Balance Entries
@@ -367,7 +454,10 @@ export default function Dashboard() {
     }
   };
 
-  const totalAssets = wallets.reduce((sum, w) => sum + Number(w.balance), 0);
+  // Exclude hidden wallets from Net Worth calculation
+  const totalAssets = wallets
+    .filter(w => !w.is_hidden)
+    .reduce((sum, w) => sum + Number(w.balance), 0);
 
   return (
     <div className="flex-1 space-y-6 relative pb-20 text-foreground">
@@ -422,25 +512,21 @@ export default function Dashboard() {
               {/* Responsive Container */}
               <div className="flex md:grid flex-row md:grid-cols-2 gap-4 overflow-x-auto md:overflow-visible pb-2 md:pb-0 scrollbar-none snap-x snap-mandatory md:snap-none px-1">
                 {wallets.map((wallet) => {
-                  const { type, color } = getWalletStyles(wallet.name);
-                  const WalletIconComponent = getWalletIcon(type);
-                  const isSelected = selectedWalletId === wallet.id;
+                  const { color } = getWalletStyles(wallet);
+                  const WalletIconComponent = getWalletIcon(wallet.icon, wallet);
 
                   return (
                     <div
                       key={wallet.id}
-                      onClick={() => setSelectedWalletId(isSelected ? null : wallet.id)}
-                      className={`snap-start shrink-0 w-44 md:w-auto md:shrink rounded-2xl p-4 bg-gradient-to-br ${color} border transition-all duration-300 cursor-pointer select-none flex flex-col justify-between h-28 relative overflow-hidden ${
-                        isSelected 
-                          ? "ring-2 ring-emerald-555 dark:ring-white scale-[1.02] border-white/40 shadow-lg shadow-black/30" 
-                          : "border-transparent hover:scale-[1.01]"
-                      }`}
+                      onClick={() => router.push(`/transactions?walletId=${wallet.id}`)}
+                      className={`snap-start shrink-0 w-44 md:w-auto md:shrink rounded-2xl p-4 bg-gradient-to-br ${color} border transition-all duration-300 cursor-pointer select-none flex flex-col justify-between h-28 relative overflow-hidden border-transparent hover:scale-[1.01]`}
                     >
                       <div className="absolute top-[-10%] right-[-10%] w-20 h-20 bg-white/5 rounded-full pointer-events-none" />
                       
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-white/95 tracking-wide bg-white/10 px-2 py-0.5 rounded-full backdrop-blur-md">
+                        <span className="text-[10px] font-bold text-white/95 tracking-wide bg-white/10 px-2 py-0.5 rounded-full backdrop-blur-md flex items-center gap-1">
                           {wallet.name}
+                          {wallet.is_hidden && <EyeOff className="h-2.5 w-2.5 text-white/80" />}
                         </span>
                         <WalletIconComponent className="h-4 w-4 text-white/80" />
                       </div>
@@ -461,6 +547,11 @@ export default function Dashboard() {
                     setEditingWallet(null);
                     setWalletName("");
                     setStartingBalance("");
+                    setIsCreditCard(false);
+                    setIsHidden(false);
+                    setSelectedColor("from-emerald-500 to-teal-600");
+                    setSelectedIcon("Wallet");
+                    setErrors({});
                     setIsAddWalletOpen(true);
                   }}
                   className="snap-start shrink-0 w-32 md:w-auto md:shrink rounded-2xl p-4 border border-dashed border-border bg-card/40 hover:bg-card hover:border-muted-foreground/40 transition-all flex flex-col items-center justify-center gap-2 cursor-pointer h-28 select-none"
@@ -581,7 +672,7 @@ export default function Dashboard() {
         </>
       )}
 
-      {/* --- ADD / EDIT WALLET MODAL --- */}
+      {/* --- ADD WALLET MODAL --- */}
       {isAddWalletOpen && (
         <Portal>
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
@@ -600,6 +691,38 @@ export default function Dashboard() {
                 </button>
               </div>
 
+              {/* Toggles */}
+              <div className="grid grid-cols-2 gap-4">
+                <label className="flex items-center gap-2 bg-background border border-border p-3 rounded-xl cursor-pointer hover:bg-accent/30 transition-all select-none">
+                  <input
+                    type="checkbox"
+                    checked={isCreditCard}
+                    onChange={(e) => {
+                      setIsCreditCard(e.target.checked);
+                      if (e.target.checked) setStartingBalance("0");
+                    }}
+                    className="accent-emerald-500 h-4 w-4 rounded border-border focus:ring-emerald-500"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-[11px] font-bold">Credit Card</span>
+                    <span className="text-[8px] text-muted-foreground">Allows negative balance</span>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2 bg-background border border-border p-3 rounded-xl cursor-pointer hover:bg-accent/30 transition-all select-none">
+                  <input
+                    type="checkbox"
+                    checked={isHidden}
+                    onChange={(e) => setIsHidden(e.target.checked)}
+                    className="accent-emerald-500 h-4 w-4 rounded border-border focus:ring-emerald-500"
+                  />
+                  <div className="flex flex-col">
+                    <span className="text-[11px] font-bold">Hide Wallet</span>
+                    <span className="text-[8px] text-muted-foreground">Exclude from Net Worth</span>
+                  </div>
+                </label>
+              </div>
+
               <div className="space-y-1">
                 <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Name</label>
                 <input
@@ -607,20 +730,75 @@ export default function Dashboard() {
                   required
                   value={walletName}
                   onChange={(e) => setWalletName(e.target.value)}
-                  placeholder="e.g. Cash, Techcombank, momo"
+                  placeholder="e.g. Cash, Techcombank, Momo"
                   className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                 />
+                {errors.name && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.name}</span>}
               </div>
 
-              <div className="space-y-1">
-                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Starting Balance (VND)</label>
-                <input
-                  type="number"
-                  value={startingBalance}
-                  onChange={(e) => setStartingBalance(e.target.value)}
-                  placeholder="e.g. 1000000"
-                  className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
-                />
+              {!isCreditCard && (
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Starting Balance (VND)</label>
+                  <input
+                    type="number"
+                    value={startingBalance}
+                    onChange={(e) => setStartingBalance(e.target.value)}
+                    placeholder="e.g. 1000000"
+                    className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                  />
+                  {errors.balance && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.balance}</span>}
+                </div>
+              )}
+
+              {/* Wallet Icon Selection */}
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Icon</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {[
+                    { name: "Wallet", icon: WalletIcon },
+                    { name: "CreditCard", icon: CreditCard },
+                    { name: "Smartphone", icon: Smartphone },
+                    { name: "PiggyBank", icon: PiggyBank }
+                  ].map((item) => {
+                    const IconComp = item.icon;
+                    const isSelected = selectedIcon === item.name;
+                    return (
+                      <button
+                        key={item.name}
+                        type="button"
+                        onClick={() => setSelectedIcon(item.name)}
+                        className={`p-2.5 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${
+                          isSelected 
+                            ? "border-emerald-500 bg-emerald-500/10 text-emerald-500" 
+                            : "border-border bg-background hover:bg-accent/40 text-muted-foreground"
+                        }`}
+                      >
+                        <IconComp className="h-4 w-4" />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Wallet Theme Color Selection */}
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Color Theme</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {COLOR_PALETTES.map((color) => {
+                    const isSelected = selectedColor === color.value;
+                    return (
+                      <button
+                        key={color.value}
+                        type="button"
+                        onClick={() => setSelectedColor(color.value)}
+                        className={`h-8 rounded-xl bg-gradient-to-br ${color.value} border-2 transition-all cursor-pointer ${
+                          isSelected ? "border-emerald-500 scale-105 shadow-md shadow-black/10" : "border-transparent opacity-85 hover:opacity-100"
+                        }`}
+                        title={color.name}
+                      />
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="flex gap-2 pt-3 border-t border-border">
@@ -648,7 +826,7 @@ export default function Dashboard() {
       {isManageWalletsOpen && (
         <Portal>
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-            <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[80%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
+            <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[85%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
               <div className="flex items-center justify-between pb-3 border-b border-border">
                 <h3 className="text-sm font-bold font-heading">Manage Accounts & Wallets</h3>
                 <button
@@ -657,6 +835,7 @@ export default function Dashboard() {
                     setIsManageWalletsOpen(false);
                     setEditingWallet(null);
                     setWalletName("");
+                    setErrors({});
                   }}
                   className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
                 >
@@ -665,10 +844,41 @@ export default function Dashboard() {
               </div>
 
               {editingWallet ? (
-                /* Rename Sub-form */
-                <form onSubmit={handleUpdateWallet} className="p-4 bg-background border border-border rounded-2xl space-y-3">
-                  <h4 className="text-xs font-bold">Edit Wallet Name</h4>
+                /* Edit Wallet Form */
+                <form onSubmit={handleUpdateWallet} className="p-4 bg-background border border-border rounded-2xl space-y-4 animate-scale-up">
+                  <h4 className="text-xs font-bold border-b border-border pb-1.5">Edit Wallet Configuration</h4>
+                  
+                  {/* Toggles */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="flex items-center gap-2 bg-card border border-border p-2 rounded-xl cursor-pointer hover:bg-accent/30 transition-all select-none">
+                      <input
+                        type="checkbox"
+                        checked={isCreditCard}
+                        onChange={(e) => setIsCreditCard(e.target.checked)}
+                        className="accent-emerald-500 h-4 w-4 rounded border-border"
+                      />
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold">Credit Card</span>
+                        <span className="text-[7px] text-muted-foreground">Allows negative balance</span>
+                      </div>
+                    </label>
+
+                    <label className="flex items-center gap-2 bg-card border border-border p-2 rounded-xl cursor-pointer hover:bg-accent/30 transition-all select-none">
+                      <input
+                        type="checkbox"
+                        checked={isHidden}
+                        onChange={(e) => setIsHidden(e.target.checked)}
+                        className="accent-emerald-500 h-4 w-4 rounded border-border"
+                      />
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold">Hide Wallet</span>
+                        <span className="text-[7px] text-muted-foreground">Exclude from Net Worth</span>
+                      </div>
+                    </label>
+                  </div>
+
                   <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Name</label>
                     <input
                       type="text"
                       required
@@ -676,13 +886,67 @@ export default function Dashboard() {
                       onChange={(e) => setWalletName(e.target.value)}
                       className="w-full bg-card border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                     />
+                    {errors.name && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.name}</span>}
                   </div>
-                  <div className="flex justify-end gap-2 text-xs">
+
+                  {/* Icon Select */}
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Icon</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[
+                        { name: "Wallet", icon: WalletIcon },
+                        { name: "CreditCard", icon: CreditCard },
+                        { name: "Smartphone", icon: Smartphone },
+                        { name: "PiggyBank", icon: PiggyBank }
+                      ].map((item) => {
+                        const IconComp = item.icon;
+                        const isSelected = selectedIcon === item.name;
+                        return (
+                          <button
+                            key={item.name}
+                            type="button"
+                            onClick={() => setSelectedIcon(item.name)}
+                            className={`p-2 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${
+                              isSelected 
+                                ? "border-emerald-500 bg-emerald-500/10 text-emerald-500" 
+                                : "border-border bg-card hover:bg-accent/40 text-muted-foreground"
+                            }`}
+                          >
+                            <IconComp className="h-3.5 w-3.5" />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Theme Select */}
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Color Theme</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {COLOR_PALETTES.map((color) => {
+                        const isSelected = selectedColor === color.value;
+                        return (
+                          <button
+                            key={color.value}
+                            type="button"
+                            onClick={() => setSelectedColor(color.value)}
+                            className={`h-7 rounded-xl bg-gradient-to-br ${color.value} border-2 transition-all cursor-pointer ${
+                              isSelected ? "border-emerald-500 scale-105 shadow-md shadow-black/10" : "border-transparent opacity-85 hover:opacity-100"
+                            }`}
+                            title={color.name}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 text-xs border-t border-border pt-3">
                     <button
                       type="button"
                       onClick={() => {
                         setEditingWallet(null);
                         setWalletName("");
+                        setErrors({});
                       }}
                       className="px-3 py-1.5 rounded-lg bg-accent text-muted-foreground"
                     >
@@ -691,9 +955,9 @@ export default function Dashboard() {
                     <button
                       type="submit"
                       disabled={submitting}
-                      className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-bold"
+                      className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-bold flex items-center gap-1.5"
                     >
-                      {submitting ? "Saving..." : "Save"}
+                      {submitting ? "Saving..." : "Save Config"}
                     </button>
                   </div>
                 </form>
@@ -706,8 +970,16 @@ export default function Dashboard() {
                     className="flex items-center justify-between p-3.5 rounded-2xl bg-background border border-border"
                   >
                     <div>
-                      <h4 className="text-xs font-bold">{wallet.name}</h4>
-                      <span className="text-[10px] text-muted-foreground">
+                      <h4 className="text-xs font-bold flex items-center gap-1.5">
+                        {wallet.name}
+                        {wallet.is_credit_card && (
+                          <span className="text-[7px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-350 px-1 rounded">Credit</span>
+                        )}
+                        {wallet.is_hidden && (
+                          <span className="text-[7px] font-bold bg-rose-500/10 text-rose-500 px-1 rounded flex items-center gap-0.5"><EyeOff className="h-2 w-2" /> Hidden</span>
+                        )}
+                      </h4>
+                      <span className="text-[10px] text-muted-foreground block mt-0.5">
                         Balance: {formatCurrency(Number(wallet.balance))}
                       </span>
                     </div>
@@ -716,6 +988,11 @@ export default function Dashboard() {
                         onClick={() => {
                           setEditingWallet(wallet);
                           setWalletName(wallet.name);
+                          setIsCreditCard(wallet.is_credit_card || false);
+                          setIsHidden(wallet.is_hidden || false);
+                          setSelectedColor(wallet.color || "from-emerald-500 to-teal-600");
+                          setSelectedIcon(wallet.icon || "Wallet");
+                          setErrors({});
                         }}
                         className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
                       >

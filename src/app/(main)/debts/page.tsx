@@ -13,11 +13,16 @@ import {
   AlertCircle,
   HelpCircle,
   Plus,
-  Loader2
+  Loader2,
+  Search,
+  SlidersHorizontal,
+  ChevronLeft
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/shared/AuthProvider";
 import Portal from "@/components/shared/Portal";
+import { Select } from "@/components/ui/select";
+import { z } from "zod";
 
 interface DebtItem {
   id: string;
@@ -51,6 +56,27 @@ export default function DebtsPage() {
   const [isAddPartnerOpen, setIsAddPartnerOpen] = useState(false);
   const [newPartnerName, setNewPartnerName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // --- LEDGER FILTER STATES (INSIDE MODAL) ---
+  const [debtSearch, setDebtSearch] = useState("");
+  const [debtTypeFilter, setDebtTypeFilter] = useState("All");
+  const [debtStatusFilter, setDebtStatusFilter] = useState("All");
+  const [debtStartDate, setDebtStartDate] = useState("");
+  const [debtEndDate, setDebtEndDate] = useState("");
+  const [showModalFilters, setShowModalFilters] = useState(false);
+  const [modalPage, setModalPage] = useState(1);
+  const modalItemsPerPage = 5;
+
+  // Reset filters when opening/changing selected partner
+  useEffect(() => {
+    setDebtSearch("");
+    setDebtTypeFilter("All");
+    setDebtStatusFilter("All");
+    setDebtStartDate("");
+    setDebtEndDate("");
+    setShowModalFilters(false);
+    setModalPage(1);
+  }, [selectedPartner]);
 
   // Load partners and transactions from DB
   const fetchDebtData = async () => {
@@ -123,7 +149,6 @@ export default function DebtsPage() {
               rawDate: new Date(tx.created_at)
             } as any);
           } else if (tx.type === "DEBT_REPAYMENT") {
-            // Find if there is any debt transaction pointing to this repayment ID
             const isMatched = partnerTxs.some((d: any) => d.repaid_by_transaction_id === tx.id);
             if (!isMatched) {
               const dateStr = new Date(tx.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -184,10 +209,19 @@ export default function DebtsPage() {
     }
   }, [user]);
 
+  // Add Partner contact with Zod validation
   const handleAddPartner = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedName = newPartnerName.trim();
     if (!trimmedName || !user || submitting) return;
+
+    const partnerSchema = z.string().min(1, "Contact Name is required").max(30, "Contact Name must be under 30 characters");
+    const check = partnerSchema.safeParse(trimmedName);
+    if (!check.success) {
+      alert(check.error.issues[0].message);
+      return;
+    }
+
     setSubmitting(true);
     try {
       const { data: existing, error: checkErr } = await supabase
@@ -253,14 +287,39 @@ export default function DebtsPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center py-20 text-xs text-muted-foreground">
-        <Loader2 className="h-6 w-6 animate-spin text-emerald-500 mb-2" />
-        <span>Loading debt information...</span>
-      </div>
-    );
-  }
+  // --- LEDGER FILTERING & PAGINATION (MODAL) ---
+  const filteredDebts = selectedPartner
+    ? selectedPartner.debts.filter((debt) => {
+        const matchesSearch = 
+          debt.title.toLowerCase().includes(debtSearch.toLowerCase()) || 
+          debt.wallet.toLowerCase().includes(debtSearch.toLowerCase());
+        
+        const matchesType = debtTypeFilter === "All" || debt.type === debtTypeFilter;
+        const matchesStatus = debtStatusFilter === "All" || debt.status === debtStatusFilter;
+        
+        let matchesDate = true;
+        const dDate = new Date(debt.rawDate);
+        if (debtStartDate) {
+          const start = new Date(debtStartDate);
+          start.setHours(0, 0, 0, 0);
+          matchesDate = matchesDate && dDate >= start;
+        }
+        if (debtEndDate) {
+          const end = new Date(debtEndDate);
+          end.setHours(23, 59, 59, 999);
+          matchesDate = matchesDate && dDate <= end;
+        }
+
+        return matchesSearch && matchesType && matchesStatus && matchesDate;
+      })
+    : [];
+
+  const totalModalItems = filteredDebts.length;
+  const totalModalPages = Math.ceil(totalModalItems / modalItemsPerPage) || 1;
+  const paginatedDebts = filteredDebts.slice(
+    (modalPage - 1) * modalItemsPerPage,
+    modalPage * modalItemsPerPage
+  );
 
   return (
     <div className="flex-1 space-y-6 relative text-foreground">
@@ -300,7 +359,7 @@ export default function DebtsPage() {
           <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Debt Contacts ({partners.length})</h3>
           <button 
             onClick={() => setIsAddPartnerOpen(true)}
-            className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-xl flex items-center gap-1 hover:bg-emerald-500/20 cursor-pointer"
+            className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-xl flex items-center gap-1 hover:bg-emerald-500/20 cursor-pointer animate-fade-in"
           >
             <Plus className="h-3 w-3" /> Add Contact
           </button>
@@ -315,7 +374,7 @@ export default function DebtsPage() {
               <div
                 key={partner.id}
                 onClick={() => setSelectedPartner(partner)}
-                className="flex items-center justify-between p-4 rounded-2xl bg-card border border-border hover:border-muted-foreground/30 hover:shadow-sm transition-all cursor-pointer"
+                className="flex items-center justify-between p-4 rounded-2xl bg-card border border-border hover:border-muted-foreground/30 hover:shadow-sm transition-all cursor-pointer select-none"
               >
                 <div className="flex items-center gap-3">
                   <div className="h-10 w-10 rounded-full bg-accent border border-border flex items-center justify-center text-muted-foreground">
@@ -357,7 +416,7 @@ export default function DebtsPage() {
       {selectedPartner && (
         <Portal>
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-            <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[85%] overflow-y-auto space-y-5 animate-scale-up">
+            <div className="w-full max-w-xl bg-card border border-border rounded-3xl p-6 max-h-[85%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
               
               {/* Header Modal */}
               <div className="flex items-center justify-between pb-3 border-b border-border">
@@ -379,7 +438,7 @@ export default function DebtsPage() {
               </div>
 
               {/* Total Balance Breakdown */}
-              <div className="grid grid-cols-2 gap-3 p-3.5 bg-background border border-border rounded-2xl text-xs">
+              <div className="grid grid-cols-2 gap-3 p-3 bg-background border border-border rounded-2xl text-xs">
                 <div className="text-left">
                   <span className="text-muted-foreground block text-[9px] uppercase">Lent (To Collect)</span>
                   <span className="font-bold text-emerald-500 font-heading block mt-0.5">
@@ -394,57 +453,178 @@ export default function DebtsPage() {
                 </div>
               </div>
 
+              {/* Advanced Filter Section */}
+              <div className="space-y-2 bg-background border border-border p-3.5 rounded-2xl">
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                    <input
+                      type="text"
+                      placeholder="Search ledger..."
+                      value={debtSearch}
+                      onChange={(e) => {
+                        setDebtSearch(e.target.value);
+                        setModalPage(1);
+                      }}
+                      className="w-full bg-card border border-border rounded-xl py-1.5 pl-9 pr-3 text-[11px] text-foreground focus:outline-none focus:border-emerald-500/40"
+                    />
+                  </div>
+                  <button
+                    onClick={() => setShowModalFilters(!showModalFilters)}
+                    className={`p-2 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
+                      showModalFilters 
+                        ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-500" 
+                        : "bg-card border-border text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                {showModalFilters && (
+                  <div className="grid grid-cols-2 gap-3 pt-2 animate-fade-in">
+                    <div>
+                      <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">Ledger Type</label>
+                      <Select
+                        value={debtTypeFilter}
+                        onValueChange={(val) => {
+                          setDebtTypeFilter(val);
+                          setModalPage(1);
+                        }}
+                        options={[
+                          { value: "All", label: "All Types" },
+                          { value: "LENT", label: "Lent" },
+                          { value: "BORROWED", label: "Borrowed" }
+                        ]}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">Ledger Status</label>
+                      <Select
+                        value={debtStatusFilter}
+                        onValueChange={(val) => {
+                          setDebtStatusFilter(val);
+                          setModalPage(1);
+                        }}
+                        options={[
+                          { value: "All", label: "All Statuses" },
+                          { value: "COMPLETED", label: "Paid" },
+                          { value: "PENDING", label: "Unpaid" },
+                          { value: "OVERDUE", label: "Overdue" }
+                        ]}
+                      />
+                    </div>
+
+                    <div className="col-span-2 grid grid-cols-2 gap-2 pt-2 border-t border-dashed border-border">
+                      <div>
+                        <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">Start Date</label>
+                        <input
+                          type="date"
+                          value={debtStartDate}
+                          onChange={(e) => {
+                            setDebtStartDate(e.target.value);
+                            setModalPage(1);
+                          }}
+                          className="w-full bg-card border border-border rounded-xl p-2 text-[11px] text-foreground focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">End Date</label>
+                        <input
+                          type="date"
+                          value={debtEndDate}
+                          onChange={(e) => {
+                            setDebtEndDate(e.target.value);
+                            setModalPage(1);
+                          }}
+                          className="w-full bg-card border border-border rounded-xl p-2 text-[11px] text-foreground focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Debt History ledger */}
               <div className="space-y-3">
-                <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-1">Debt Ledger History</h4>
+                <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-1">Debt Ledger History ({filteredDebts.length})</h4>
                 <div className="space-y-2">
-                  {selectedPartner.debts.map((debt) => {
-                    const isLent = debt.type === "LENT";
-                    return (
-                      <div 
-                        key={debt.id} 
-                        className="p-3.5 rounded-2xl bg-background border border-border space-y-3"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <h5 className="text-xs font-bold">{debt.title}</h5>
-                            <div className="flex items-center gap-1.5 mt-1 text-[9px] text-muted-foreground">
-                              <Calendar className="h-3 w-3" />
-                              <span>{debt.date}</span>
+                  {paginatedDebts.length > 0 ? (
+                    paginatedDebts.map((debt) => {
+                      const isLent = debt.type === "LENT";
+                      return (
+                        <div 
+                          key={debt.id} 
+                          className="p-3.5 rounded-2xl bg-background border border-border space-y-3"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <h5 className="text-xs font-bold">{debt.title}</h5>
+                              <div className="flex items-center gap-1.5 mt-1 text-[9px] text-muted-foreground">
+                                <Calendar className="h-3 w-3" />
+                                <span>{debt.date}</span>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <span className={`text-xs font-extrabold font-heading ${isLent ? "text-emerald-500" : "text-rose-500"}`}>
+                                {isLent ? "+" : "-"}{formatCurrency(debt.amount)}
+                              </span>
+                              <span className="text-[9px] text-muted-foreground block mt-0.5">{isLent ? "Lent" : "Borrowed"}</span>
                             </div>
                           </div>
-                          <div className="text-right">
-                            <span className={`text-xs font-extrabold font-heading ${isLent ? "text-emerald-500" : "text-rose-500"}`}>
-                              {isLent ? "+" : "-"}{formatCurrency(debt.amount)}
-                            </span>
-                            <span className="text-[9px] text-muted-foreground block mt-0.5">{isLent ? "Lent" : "Borrowed"}</span>
-                          </div>
-                        </div>
 
-                        {/* Wallet and Status info footer */}
-                        <div className="pt-2.5 border-t border-border flex items-center justify-between text-[10px]">
-                          <div className="flex items-center gap-1 text-muted-foreground">
-                            <Wallet className="h-3 w-3" />
-                            <span>
-                              Wallet: <strong className="text-foreground/80">{debt.wallet}</strong>
-                              {debt.repayWallet && (
-                                <span className="text-muted-foreground font-normal">
-                                  {" "}→ Repaid via: <strong className="text-foreground">{debt.repayWallet}</strong>
-                                </span>
+                          {/* Wallet and Status info footer */}
+                          <div className="pt-2.5 border-t border-border flex items-center justify-between text-[10px]">
+                            <div className="flex items-center gap-1 text-muted-foreground">
+                              <Wallet className="h-3 w-3" />
+                              <span>
+                                Wallet: <strong className="text-foreground/80">{debt.wallet}</strong>
+                                {debt.repayWallet && (
+                                  <span className="text-muted-foreground font-normal">
+                                    {" "}→ Repaid: <strong className="text-foreground">{debt.repayWallet}</strong>
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {debt.dueDate && debt.status !== "COMPLETED" && (
+                                <span className="text-muted-foreground text-[9px]">Due: {debt.dueDate}</span>
                               )}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {debt.dueDate && debt.status !== "COMPLETED" && (
-                              <span className="text-muted-foreground text-[9px]">Due: {debt.dueDate}</span>
-                            )}
-                            {getStatusBadge(debt.status, debt.repaidDate)}
+                              {getStatusBadge(debt.status, debt.repaidDate)}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })
+                  ) : (
+                    <div className="text-center text-xs text-muted-foreground py-8 bg-background border border-border border-dashed rounded-2xl">
+                      No matching records found.
+                    </div>
+                  )}
                 </div>
+
+                {/* Ledger Pagination */}
+                {totalModalPages > 1 && (
+                  <div className="flex items-center justify-between pt-2 text-xs">
+                    <button
+                      onClick={() => setModalPage(prev => Math.max(prev - 1, 1))}
+                      disabled={modalPage === 1}
+                      className="flex items-center gap-1 px-3 py-1 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground disabled:opacity-50 cursor-pointer"
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" /> Prev
+                    </button>
+                    <span className="text-muted-foreground font-medium">
+                      Page {modalPage} of {totalModalPages}
+                    </span>
+                    <button
+                      onClick={() => setModalPage(prev => Math.min(prev + 1, totalModalPages))}
+                      disabled={modalPage === totalModalPages}
+                      className="flex items-center gap-1 px-3 py-1 rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground disabled:opacity-50 cursor-pointer"
+                    >
+                      Next <ChevronRight className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -457,7 +637,7 @@ export default function DebtsPage() {
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
             <form 
               onSubmit={handleAddPartner}
-              className="w-full max-w-sm bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground"
+              className="w-full max-w-sm bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground font-sans"
             >
               <div className="flex items-center justify-between pb-3 border-b border-border">
                 <h3 className="text-sm font-bold font-heading">Add Debt Contact</h3>

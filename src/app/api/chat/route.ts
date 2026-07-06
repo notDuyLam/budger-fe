@@ -163,6 +163,10 @@ ${partnerListStr}
    - For standard INCOME and EXPENSE transactions, 'partner' must be null.
 7. Extract 'note' ONLY if the user provides additional context (e.g. "lunch with group", "birthday party", "monthly subscription").
    - **CRITICAL RULE:** If the user statement does not contain any extra details beyond the amount, merchant, wallet or category, you must set 'note' to null or empty string. Do NOT invent a note, do NOT copy description to note.
+8. Extract 'due_date' (Only for DEBT_LENT and DEBT_BORROWED):
+   - Extract any due date, payback deadline or repayment date specified in the user's message (e.g. 'cuối tuần sau', 'tháng sau', 'ngày 15/10').
+   - Convert relative or absolute dates to an ISO date string format (YYYY-MM-DD) based on today's local date: ${new Date().toISOString().split("T")[0]}.
+   - If no payback deadline or date is specified, set 'due_date' to null.
 
 User Input: "${message}"`;
 }
@@ -209,6 +213,10 @@ function buildGeminiPayload(prompt: string) {
           note: {
             type: "STRING",
             description: "Any extra descriptive context, or null if no additional detail was specified.",
+          },
+          due_date: {
+            type: "STRING",
+            description: "An ISO format date string (YYYY-MM-DD) representing the payback deadline, or null if not specified. Only applicable for DEBT_LENT and DEBT_BORROWED.",
           },
         },
         required: ["type", "amount", "wallet", "description"],
@@ -306,6 +314,15 @@ function validateAndNormalize(result: any, wallets: string[], categories: Catego
     }
   }
 
+  // Normalize due_date
+  let due_date = result.due_date && String(result.due_date).trim() ? String(result.due_date).trim() : null;
+  if (due_date) {
+    const lowerDate = due_date.toLowerCase();
+    if (lowerDate === "null" || lowerDate === "undefined" || lowerDate === "none") {
+      due_date = null;
+    }
+  }
+
   return {
     type,
     amount,
@@ -314,5 +331,6 @@ function validateAndNormalize(result: any, wallets: string[], categories: Catego
     description,
     partner,
     note,
+    due_date,
   };
 }

@@ -62,9 +62,13 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
 
       // Handle redirects client-side for smoother transition
       if (event === "SIGNED_IN") {
-        router.push("/dashboard");
+        if (pathname === "/login" || pathname === "/") {
+          router.push("/dashboard");
+        }
       } else if (event === "SIGNED_OUT") {
-        router.push("/login");
+        if (pathname !== "/login" && pathname !== "/") {
+          router.push("/login");
+        }
       }
     });
 

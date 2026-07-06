@@ -19,22 +19,44 @@ import {
   Plus,
   Loader2,
   Trash2,
-  Edit2
+  Edit2,
+  Calendar,
+  Wallet as WalletIcon,
+  Tag,
+  Users,
+  EyeOff,
+  ChevronLeft,
+  ChevronRight,
+  ArrowRight,
+  Sparkle,
+  Home,
+  Car,
+  Activity,
+  BookOpen,
+  Gamepad2,
+  Gift,
+  HelpCircle,
+  CreditCard
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/shared/AuthProvider";
 import Portal from "@/components/shared/Portal";
+import { Select } from "@/components/ui/select";
+import { z } from "zod";
 
 interface Wallet {
   id: string;
   name: string;
   balance: number;
+  is_hidden?: boolean;
+  is_credit_card?: boolean;
 }
 
 interface Category {
   id: string;
   name: string;
   type: "INCOME" | "EXPENSE";
+  icon?: string | null;
 }
 
 interface Transaction {
@@ -44,26 +66,35 @@ interface Transaction {
   type: string;
   created_at: string;
   wallet_id: string;
-  category_id: string;
+  to_wallet_id?: string | null;
+  debt_partner_id?: string | null;
+  category_id?: string | null;
   note?: string;
   wallet_name?: string;
+  to_wallet_name?: string;
   category_name?: string;
+  debt_partner_name?: string;
+  status?: string;
+  due_date?: string | null;
+  repaid_by_transaction_id?: string | null;
   dateStr?: string;
 }
 
 interface Message {
   id: string;
+  dbId?: string; // supabase ID
   sender: "user" | "ai";
   text: string;
   time: string;
   confirmationCard?: {
-    type: string; // INCOME | EXPENSE | DEBT_LENT | DEBT_BORROWED
+    type: string;
     amount: number;
-    wallet: string; // Wallet name
-    category?: string | null; // Category name (optional for debts)
+    wallet: string;
+    category?: string | null;
     description: string;
     note?: string;
-    partner?: string; // Debt partner name
+    partner?: string;
+    due_date?: string | null;
     status: "pending" | "saved" | "cancelled";
   };
 }
@@ -72,7 +103,7 @@ export default function TransactionsPage() {
   return (
     <Suspense fallback={
       <div className="flex-1 flex items-center justify-center p-8 text-xs text-muted-foreground">
-        <span className="animate-pulse">Loading AI Assistant...</span>
+        <span className="animate-pulse">Loading Transaction Manager...</span>
       </div>
     }>
       <TransactionsContent />
@@ -94,11 +125,19 @@ function TransactionsContent() {
   const [debtPartners, setDebtPartners] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Filters
+  // --- FILTER STATES ---
+  const [searchQuery, setSearchQuery] = useState("");
   const [filterWalletId, setFilterWalletId] = useState("All");
   const [filterCategoryId, setFilterCategoryId] = useState("All");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [filterType, setFilterType] = useState("All");
+  const [filterPartnerId, setFilterPartnerId] = useState("All");
+  const [filterStartDate, setFilterStartDate] = useState("");
+  const [filterEndDate, setFilterEndDate] = useState("");
   const [showFilters, setShowFilters] = useState(false);
+
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
 
   // --- MANUAL TRANSACTION FORM STATES ---
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -107,11 +146,15 @@ function TransactionsContent() {
   const [formAmount, setFormAmount] = useState("");
   const [formType, setFormType] = useState("EXPENSE");
   const [formWalletId, setFormWalletId] = useState("");
+  const [formToWalletId, setFormToWalletId] = useState("");
   const [formCategoryId, setFormCategoryId] = useState("");
   const [formNote, setFormNote] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const [formPartnerId, setFormPartnerId] = useState("");
   const [formNewPartnerName, setFormNewPartnerName] = useState("");
+  const [formDueDate, setFormDueDate] = useState("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  
+  const [submitting, setSubmitting] = useState(false);
   const [partnerConfirmData, setPartnerConfirmData] = useState<{
     partnerName: string;
     onConfirm: (createdPartnerId: string) => Promise<void>;
@@ -122,14 +165,19 @@ function TransactionsContent() {
   const [isManageCategoriesOpen, setIsManageCategoriesOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryType, setNewCategoryType] = useState<"INCOME" | "EXPENSE">("EXPENSE");
+  const [newCategoryIcon, setNewCategoryIcon] = useState("HelpCircle");
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [suggestingIcon, setSuggestingIcon] = useState(false);
+
+  const isDebt = formType === "DEBT_LENT" || formType === "DEBT_BORROWED";
+  const isRepayment = formType === "DEBT_REPAYMENT";
 
   // --- AI ASSISTANT STATES ---
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "m1",
       sender: "ai",
-      text: "Hello! I am your AI Finance Assistant. 🧠\nYou can type your expenditures or income, and I will automatically parse them. For example:\n* \"Dinner cost 120k techcombank for birthday party\"\n* \"Received salary of 15 million in Techcombank\"",
+      text: "Hello! I am your AI Finance Assistant. 🧠\nYou can type your expenditures or income, and I will automatically parse them. For example:\n* \"Dinner cost 120k techcombank for birthday party\"\n* \"Received salary of 15 million in Techcombank\"\n* \"Borrowed 5m from Nam due next Friday\"",
       time: "21:07",
     }
   ]);
@@ -137,12 +185,31 @@ function TransactionsContent() {
   const [isTyping, setIsTyping] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
-  // Load Initial Data
+  // --- PAST CHATS HISTORY STATES ---
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyMessages, setHistoryMessages] = useState<Message[]>([]);
+  const [historyPeriod, setHistoryPeriod] = useState<"today" | "week" | "month" | "all">("all");
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // Load URL Filter Redirects & Initial Data
+  const urlWalletId = searchParams.get("walletId");
+  const urlTab = searchParams.get("tab");
+
   useEffect(() => {
     if (user) {
       fetchInitialData();
     }
   }, [user]);
+
+  useEffect(() => {
+    if (urlWalletId && wallets.length > 0) {
+      setFilterWalletId(urlWalletId);
+      setShowFilters(true);
+    }
+    if (urlTab === "ai") {
+      setActiveTab("ai");
+    }
+  }, [urlWalletId, urlTab, wallets]);
 
   // Auto-scroll on new message
   useEffect(() => {
@@ -155,17 +222,22 @@ function TransactionsContent() {
       // 1. Fetch Wallets
       const { data: walletsData } = await supabase
         .from("wallets")
-        .select("id, name, balance")
+        .select("*")
         .order("created_at", { ascending: true });
-      setWallets(walletsData || []);
-      if (walletsData && walletsData.length > 0) {
-        setFormWalletId(walletsData[0].id);
+      const wl = walletsData || [];
+      setWallets(wl);
+      
+      const visibleWallets = wl.filter(w => !w.is_hidden);
+      if (visibleWallets.length > 0) {
+        setFormWalletId(visibleWallets[0].id);
+        const secondWallet = visibleWallets[1] || visibleWallets[0];
+        setFormToWalletId(secondWallet.id);
       }
 
       // 2. Fetch Categories
       const { data: categoriesData } = await supabase
         .from("categories")
-        .select("id, name, type")
+        .select("*")
         .order("name", { ascending: true });
       setCategories(categoriesData || []);
       if (categoriesData && categoriesData.length > 0) {
@@ -180,7 +252,7 @@ function TransactionsContent() {
       setDebtPartners(partnersData || []);
 
       // 4. Fetch Transactions
-      await fetchTransactions();
+      await fetchTransactions(wl);
     } catch (err) {
       console.error("Error loading initial data:", err);
     } finally {
@@ -188,22 +260,25 @@ function TransactionsContent() {
     }
   };
 
-  const fetchTransactions = async () => {
+  const fetchTransactions = async (walletsList?: Wallet[]) => {
     try {
+      const activeWallets = walletsList || wallets;
       const { data: txsData } = await supabase
         .from("transactions")
         .select(`
           *,
-          wallets (name),
-          categories (name),
+          categories (name, icon),
           debt_partners (name)
         `)
         .order("created_at", { ascending: false });
 
       const formattedTxs = (txsData || []).map((tx: any) => ({
         ...tx,
-        wallet_name: tx.wallets?.name || "Unknown Wallet",
-        category_name: tx.categories?.name || (tx.debt_partners?.name ? `Contact: ${tx.debt_partners.name}` : "Uncategorized"),
+        wallet_name: activeWallets.find(w => w.id === tx.wallet_id)?.name || "Unknown Wallet",
+        to_wallet_name: tx.to_wallet_id ? (activeWallets.find(w => w.id === tx.to_wallet_id)?.name || "Unknown Wallet") : undefined,
+        category_name: tx.type === "TRANSFER" 
+          ? `Transfer to: ${activeWallets.find(w => w.id === tx.to_wallet_id)?.name || "Unknown"}`
+          : (tx.categories?.name || (tx.debt_partners?.name ? `Contact: ${tx.debt_partner_name || tx.debt_partners.name}` : "Uncategorized")),
         dateStr: getGroupDateStr(tx.created_at)
       }));
       setTransactions(formattedTxs);
@@ -237,7 +312,12 @@ function TransactionsContent() {
     setFormDescription("");
     setFormAmount("");
     setFormType("EXPENSE");
-    if (wallets.length > 0) setFormWalletId(wallets[0].id);
+    
+    const visibleWallets = wallets.filter(w => !w.is_hidden);
+    if (visibleWallets.length > 0) {
+      setFormWalletId(visibleWallets[0].id);
+      setFormToWalletId(visibleWallets[1]?.id || visibleWallets[0].id);
+    }
     
     // Default to first expense category
     const expenseCat = categories.find(c => c.type === "EXPENSE");
@@ -247,6 +327,8 @@ function TransactionsContent() {
     setFormNote("");
     setFormPartnerId(debtPartners[0]?.id || "");
     setFormNewPartnerName("");
+    setFormDueDate("");
+    setErrors({});
     setIsFormOpen(true);
   };
 
@@ -256,28 +338,108 @@ function TransactionsContent() {
     setFormAmount(Math.abs(tx.amount).toString());
     setFormType(tx.type);
     setFormWalletId(tx.wallet_id);
+    setFormToWalletId(tx.to_wallet_id || "");
     setFormCategoryId(tx.category_id || "");
     setFormNote(tx.note || "");
+    setFormDueDate(tx.due_date ? tx.due_date.split("T")[0] : "");
     
-    // Set partner if applicable
-    const existingPartnerId = (tx as any).debt_partner_id || "";
+    const existingPartnerId = tx.debt_partner_id || "";
     setFormPartnerId(existingPartnerId);
     setFormNewPartnerName("");
+    setErrors({});
     setIsFormOpen(true);
   };
 
   const handleSaveForm = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formDescription.trim() || !formAmount.trim() || !user) return;
+    if (!user) return;
+
+    // --- Zod Validation Schema ---
+    const isDebt = formType === "DEBT_LENT" || formType === "DEBT_BORROWED";
+    const isRepayment = formType === "DEBT_REPAYMENT";
+    const isTransfer = formType === "TRANSFER";
+
+    const transactionSchema = z.object({
+      description: z.string().min(1, "Description is required").max(100, "Description must be under 100 characters"),
+      amount: z.coerce.number().positive("Amount must be greater than 0"),
+      walletId: z.string().min(1, "Source Wallet is required"),
+      toWalletId: isTransfer ? z.string().min(1, "Destination Wallet is required").refine((val) => val !== formWalletId, "Source and destination wallets must be different") : z.string().optional(),
+      categoryId: (!isDebt && !isRepayment && !isTransfer) ? z.string().min(1, "Category is required") : z.string().optional(),
+      partnerId: (isDebt || isRepayment) ? z.string().min(1, "Debt Partner is required") : z.string().optional(),
+      newPartnerName: (isDebt || isRepayment) && formPartnerId === "NEW" ? z.string().min(1, "Partner name is required") : z.string().optional(),
+      dueDate: isDebt ? z.string().optional() : z.string().optional()
+    });
+
+    const check = transactionSchema.safeParse({
+      description: formDescription.trim(),
+      amount: formAmount,
+      walletId: formWalletId,
+      toWalletId: formToWalletId,
+      categoryId: formCategoryId,
+      partnerId: formPartnerId,
+      newPartnerName: formNewPartnerName.trim(),
+      dueDate: formDueDate
+    });
+
+    if (!check.success) {
+      const errMap: Record<string, string> = {};
+      check.error.issues.forEach((issue) => {
+        if (issue.path[0]) errMap[issue.path[0] as string] = issue.message;
+      });
+      setErrors(errMap);
+      return;
+    }
+    setErrors({});
 
     const amt = parseFloat(formAmount);
-    if (isNaN(amt) || amt < 0) return;
+
+    // --- Standard Wallet Negative Balance Prevention ---
+    const wallet = wallets.find(w => w.id === formWalletId);
+    if (wallet && !wallet.is_credit_card) {
+      let isRepaymentLent = false;
+      if (isRepayment && formPartnerId) {
+        const pendingDebt = transactions.find(t => 
+          t.debt_partner_id === formPartnerId && 
+          t.status === "PENDING" && 
+          (t.type === "DEBT_LENT" || t.type === "DEBT_BORROWED")
+        );
+        isRepaymentLent = pendingDebt ? pendingDebt.type === "DEBT_LENT" : false;
+      }
+      
+      let delta = 0;
+      if (formType === "EXPENSE" || formType === "DEBT_LENT" || formType === "TRANSFER") {
+        delta = -amt;
+      } else if (formType === "INCOME" || formType === "DEBT_BORROWED") {
+        delta = amt;
+      } else if (formType === "DEBT_REPAYMENT") {
+        delta = isRepaymentLent ? amt : -amt;
+      }
+
+      let oldDelta = 0;
+      if (editingTx) {
+        let isOldRepaymentLent = false;
+        if (editingTx.type === "DEBT_REPAYMENT" && editingTx.debt_partner_id) {
+          const originalDebt = transactions.find(t => t.repaid_by_transaction_id === editingTx.id);
+          isOldRepaymentLent = originalDebt ? originalDebt.type === "DEBT_LENT" : false;
+        }
+        
+        if (editingTx.type === "EXPENSE" || editingTx.type === "DEBT_LENT" || editingTx.type === "TRANSFER") {
+          oldDelta = -editingTx.amount;
+        } else if (editingTx.type === "INCOME" || editingTx.type === "DEBT_BORROWED") {
+          oldDelta = editingTx.amount;
+        } else if (editingTx.type === "DEBT_REPAYMENT") {
+          oldDelta = isOldRepaymentLent ? editingTx.amount : -editingTx.amount;
+        }
+      }
+
+      if (wallet.balance - oldDelta + delta < 0) {
+        setErrors({ amount: `Transaction blocked! Standard wallet balance cannot drop below 0. Potential balance: ${(wallet.balance - oldDelta + delta).toLocaleString()} VND.` });
+        return;
+      }
+    }
 
     setSubmitting(true);
     
-    const isDebt = formType === "DEBT_LENT" || formType === "DEBT_BORROWED";
-    const isRepayment = formType === "DEBT_REPAYMENT";
-
     const saveTransactionData = async (partnerId: string | null) => {
       try {
         const status = isDebt ? "PENDING" : "COMPLETED";
@@ -286,9 +448,11 @@ function TransactionsContent() {
           amount: amt,
           type: formType,
           wallet_id: formWalletId,
-          category_id: (!isDebt && !isRepayment) ? (formCategoryId || null) : null,
+          to_wallet_id: isTransfer ? formToWalletId : null,
+          category_id: (!isDebt && !isRepayment && !isTransfer) ? (formCategoryId || null) : null,
           debt_partner_id: partnerId || null,
           note: formNote.trim() || null,
+          due_date: (isDebt && formDueDate) ? new Date(formDueDate).toISOString() : null,
           user_id: user.id,
           status: status
         };
@@ -309,7 +473,7 @@ function TransactionsContent() {
 
           if (insertErr) throw insertErr;
 
-          // If it is a repayment, resolve and update corresponding PENDING debt to COMPLETED and link it
+          // Repayment Sync
           if (isRepayment && partnerId && newTx) {
             const { data: originalDebt } = await supabase
               .from("transactions")
@@ -336,34 +500,25 @@ function TransactionsContent() {
         setIsFormOpen(false);
         fetchTransactions();
 
-        // Refetch partners to keep caches in-sync
+        // Refetch partners
         const { data: partnersData } = await supabase
           .from("debt_partners")
           .select("id, name")
           .order("name", { ascending: true });
         setDebtPartners(partnersData || []);
-      } catch (err) {
-        console.error("Error inside saveTransactionData:", err);
-        alert("Failed to save transaction: " + (err as any).message);
+      } catch (err: any) {
+        console.error("Error saving transaction:", err);
+        alert("Failed to save transaction: " + err.message);
       } finally {
         setSubmitting(false);
       }
     };
 
-    // If it's a debt/repayment and user wants to create a new partner
     if ((isDebt || isRepayment) && formPartnerId === "NEW") {
-      if (!formNewPartnerName.trim()) {
-        alert("Please enter new partner name");
-        setSubmitting(false);
-        return;
-      }
-      
       const matched = debtPartners.find(p => p.name.toLowerCase() === formNewPartnerName.trim().toLowerCase());
       if (matched) {
-        // Partner already exists, save directly using existing id
         saveTransactionData(matched.id);
       } else {
-        // Trigger confirmation modal
         setPartnerConfirmData({
           partnerName: formNewPartnerName.trim(),
           onConfirm: async (createdPartnerId: string) => {
@@ -377,11 +532,9 @@ function TransactionsContent() {
         });
       }
     } else {
-      // Normal transaction or existing partner selected
       try {
         await saveTransactionData(formPartnerId || null);
       } catch (err) {
-        console.error("Error saving transaction:", err);
         setSubmitting(false);
       }
     }
@@ -407,28 +560,36 @@ function TransactionsContent() {
     }
   };
 
-  // --- CATEGORY CRUD HANDLERS ---
+  // --- CATEGORY CRUD HANDLERS WITH ZOD & ICON ---
   const handleAddCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCategoryName.trim() || !user) return;
 
+    const catSchema = z.string().min(1, "Name is required").max(30, "Name must be under 30 characters");
+    const check = catSchema.safeParse(newCategoryName.trim());
+    if (!check.success) {
+      alert(check.error.issues[0].message);
+      return;
+    }
+
     try {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from("categories")
         .insert({
           user_id: user.id,
           name: newCategoryName.trim(),
-          type: newCategoryType
-        })
-        .select();
+          type: newCategoryType,
+          icon: newCategoryIcon
+        });
 
       if (error) throw error;
 
       setNewCategoryName("");
-      // Refetch categories
+      setNewCategoryIcon("HelpCircle");
+      // Refetch
       const { data: categoriesData } = await supabase
         .from("categories")
-        .select("id, name, type")
+        .select("*")
         .order("name", { ascending: true });
       setCategories(categoriesData || []);
     } catch (err) {
@@ -445,7 +606,8 @@ function TransactionsContent() {
         .from("categories")
         .update({
           name: newCategoryName.trim(),
-          type: newCategoryType
+          type: newCategoryType,
+          icon: newCategoryIcon
         })
         .eq("id", editingCategory.id);
 
@@ -453,10 +615,11 @@ function TransactionsContent() {
 
       setEditingCategory(null);
       setNewCategoryName("");
+      setNewCategoryIcon("HelpCircle");
       // Refetch
       const { data: categoriesData } = await supabase
         .from("categories")
-        .select("id, name, type")
+        .select("*")
         .order("name", { ascending: true });
       setCategories(categoriesData || []);
     } catch (err) {
@@ -475,10 +638,9 @@ function TransactionsContent() {
 
       if (error) throw error;
 
-      // Refetch
       const { data: categoriesData } = await supabase
         .from("categories")
-        .select("id, name, type")
+        .select("*")
         .order("name", { ascending: true });
       setCategories(categoriesData || []);
     } catch (err) {
@@ -486,23 +648,59 @@ function TransactionsContent() {
     }
   };
 
-  // --- CHAT AI PARSING via API Router ---
+  // AI suggest category icon based on name
+  const suggestCategoryIcon = async () => {
+    if (!newCategoryName.trim()) {
+      alert("Please enter a category name first!");
+      return;
+    }
+    setSuggestingIcon(true);
+    try {
+      const res = await fetch("/api/suggest-icon", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categoryName: newCategoryName.trim() })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.icon) {
+          setNewCategoryIcon(data.icon);
+        }
+      }
+    } catch (err) {
+      console.error("Error suggesting icon:", err);
+    } finally {
+      setSuggestingIcon(false);
+    }
+  };
+
+  // --- CHAT AI PARSING WITH PERSISTED MESSAGES LOGGING ---
   const handleSendMessage = async () => {
-    if (!chatInput.trim()) return;
+    if (!chatInput.trim() || !user) return;
 
     const userText = chatInput;
-    const userMsg: Message = {
-      id: `msg-user-${Date.now()}`,
-      sender: "user",
-      text: userText,
-      time: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
+    const userTime = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+    
+    // Save user message to client state & DB
     setChatInput("");
     setIsTyping(true);
 
     try {
+      // Log User message in Supabase
+      const { data: userMsgData } = await supabase.from("chat_messages").insert({
+        user_id: user.id,
+        sender: "user",
+        text: userText
+      }).select().single();
+
+      const userMsgId = userMsgData?.id || `msg-user-${Date.now()}`;
+      setMessages((prev) => [...prev, {
+        id: userMsgId,
+        sender: "user",
+        text: userText,
+        time: userTime
+      }]);
+
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
@@ -510,7 +708,7 @@ function TransactionsContent() {
         },
         body: JSON.stringify({
           message: userText,
-          wallets: wallets.map((w) => w.name),
+          wallets: wallets.filter(w => !w.is_hidden).map((w) => w.name),
           categories: categories.map((c) => ({ name: c.name, type: c.type })),
           partners: debtPartners.map((p) => p.name),
         }),
@@ -522,34 +720,55 @@ function TransactionsContent() {
       }
 
       const result = await response.json();
+      const aiTime = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
-      const aiMsg: Message = {
-        id: `msg-ai-${Date.now()}`,
+      const confirmationCardData = {
+        type: result.type,
+        amount: result.amount,
+        wallet: result.wallet,
+        category: result.category,
+        description: result.description,
+        partner: result.partner || undefined,
+        due_date: result.due_date || undefined,
+        note: (result.note && result.note.toLowerCase() !== "null" && result.note.toLowerCase() !== "none" && result.note !== ".") ? result.note : undefined,
+        status: "pending" as const,
+      };
+
+      // Save AI message and confirmation card to DB
+      const { data: aiMsgData } = await supabase.from("chat_messages").insert({
+        user_id: user.id,
         sender: "ai",
         text: "I have analyzed your statement. Please confirm the transaction card details below to save it:",
-        time: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
-        confirmationCard: {
-          type: result.type,
-          amount: result.amount,
-          wallet: result.wallet,
-          category: result.category,
-          description: result.description,
-          partner: result.partner || undefined,
-          note: (result.note && result.note.toLowerCase() !== "null" && result.note.toLowerCase() !== "none" && result.note !== ".") ? result.note : undefined,
-          status: "pending",
-        },
-      };
+        confirmation_card: confirmationCardData
+      }).select().single();
 
-      setMessages((prev) => [...prev, aiMsg]);
+      const aiMsgId = aiMsgData?.id || `msg-ai-${Date.now()}`;
+      
+      setMessages((prev) => [...prev, {
+        id: aiMsgId,
+        dbId: aiMsgData?.id,
+        sender: "ai",
+        text: "I have analyzed your statement. Please confirm the transaction card details below to save it:",
+        time: aiTime,
+        confirmationCard: confirmationCardData
+      }]);
     } catch (err: any) {
       console.error("AI Assistant Error:", err);
-      const errorMsg: Message = {
-        id: `msg-ai-err-${Date.now()}`,
+      const errText = `❌ Error: ${err.message || "Something went wrong while talking to the AI. Please verify your API keys or try again."}`;
+      
+      // Save AI error log in Supabase
+      const { data: aiErrData } = await supabase.from("chat_messages").insert({
+        user_id: user.id,
         sender: "ai",
-        text: `❌ Error: ${err.message || "Something went wrong while talking to the AI. Please verify your API keys or try again."}`,
+        text: errText
+      }).select().single();
+
+      setMessages((prev) => [...prev, {
+        id: aiErrData?.id || `msg-ai-err-${Date.now()}`,
+        sender: "ai",
+        text: errText,
         time: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
-      };
-      setMessages((prev) => [...prev, errorMsg]);
+      }]);
     } finally {
       setIsTyping(false);
     }
@@ -558,14 +777,27 @@ function TransactionsContent() {
   const handleConfirmCard = async (msgId: string, action: "save" | "cancel") => {
     if (!user) return;
     
+    const targetMsg = messages.find(m => m.id === msgId);
+    if (!targetMsg || !targetMsg.confirmationCard) return;
+    const card = targetMsg.confirmationCard;
+
     if (action === "cancel") {
+      const updatedCard = { ...card, status: "cancelled" as const };
+      
+      // Update DB record
+      if (targetMsg.dbId) {
+        await supabase.from("chat_messages")
+          .update({ confirmation_card: updatedCard })
+          .eq("id", targetMsg.dbId);
+      }
+
       setMessages((prev) => 
         prev.map((msg) => {
           if (msg.id === msgId && msg.confirmationCard) {
             return {
               ...msg,
               text: `❌ Transaction cancelled. Feel free to type another request.`,
-              confirmationCard: { ...msg.confirmationCard, status: "cancelled" }
+              confirmationCard: updatedCard
             };
           }
           return msg;
@@ -575,10 +807,6 @@ function TransactionsContent() {
     }
 
     // "save" action
-    const targetMsg = messages.find(m => m.id === msgId);
-    if (!targetMsg || !targetMsg.confirmationCard) return;
-    const card = targetMsg.confirmationCard;
-
     const isDebt = card.type === "DEBT_LENT" || card.type === "DEBT_BORROWED" || card.type === "DEBT_REPAYMENT";
     let partnerId = null;
     let matchedPartner = null;
@@ -592,17 +820,45 @@ function TransactionsContent() {
 
     const saveAICard = async (pId: string | null) => {
       try {
-        // 1. Resolve Wallet ID
+        // Resolve Wallet
         const wId = wallets.find(w => w.name.toLowerCase() === card.wallet.toLowerCase())?.id || wallets[0]?.id;
         
-        // 2. Resolve Category ID (only for standard income/expense)
+        // Resolve Category
         const isActualDebt = card.type === "DEBT_LENT" || card.type === "DEBT_BORROWED";
         let cId = null;
         if (!isActualDebt && card.category) {
           cId = categories.find(c => c.name.toLowerCase() === card.category!.toLowerCase())?.id || categories[0]?.id;
         }
 
-        // 4. Save Transaction to Supabase
+        // Standard Wallet Negative Balance Prevention
+        const targetWallet = wallets.find(w => w.id === wId);
+        if (targetWallet && !targetWallet.is_credit_card) {
+          let isRepaymentLent = false;
+          if (card.type === "DEBT_REPAYMENT" && pId) {
+            const pendingDebt = transactions.find(t => 
+              t.debt_partner_id === pId && 
+              t.status === "PENDING" && 
+              (t.type === "DEBT_LENT" || t.type === "DEBT_BORROWED")
+            );
+            isRepaymentLent = pendingDebt ? pendingDebt.type === "DEBT_LENT" : false;
+          }
+          
+          let delta = 0;
+          if (card.type === "EXPENSE" || card.type === "DEBT_LENT") {
+            delta = -card.amount;
+          } else if (card.type === "INCOME" || card.type === "DEBT_BORROWED") {
+            delta = card.amount;
+          } else if (card.type === "DEBT_REPAYMENT") {
+            delta = isRepaymentLent ? card.amount : -card.amount;
+          }
+
+          if (targetWallet.balance + delta < 0) {
+            alert(`Save blocked! Standard wallet balance cannot drop below 0. Current balance: ${targetWallet.balance.toLocaleString()} VND.`);
+            return;
+          }
+        }
+
+        // Save Transaction to Supabase
         const status = isActualDebt ? "PENDING" : "COMPLETED";
         const { data: newTx, error: txErr } = await supabase.from("transactions").insert({
           user_id: user.id,
@@ -613,12 +869,13 @@ function TransactionsContent() {
           type: card.type,
           description: card.description,
           note: card.note || null,
+          due_date: (isActualDebt && card.due_date) ? new Date(card.due_date).toISOString() : null,
           status: status
         }).select().single();
 
         if (txErr) throw txErr;
 
-        // If it is a repayment, update original PENDING debt status to COMPLETED and link it
+        // Repayment Sync
         if (card.type === "DEBT_REPAYMENT" && pId && newTx) {
           const { data: originalDebt } = await supabase
             .from("transactions")
@@ -641,10 +898,17 @@ function TransactionsContent() {
           }
         }
 
-        // 5. Refetch Transactions to update UI
         fetchTransactions();
 
-        // 6. Update Messages UI state to marked as saved
+        // Update DB AI Message status to saved
+        const updatedCard = { ...card, status: "saved" as const };
+        if (targetMsg.dbId) {
+          await supabase.from("chat_messages")
+            .update({ confirmation_card: updatedCard })
+            .eq("id", targetMsg.dbId);
+        }
+
+        // Update message state in client
         setMessages((prev) =>
           prev.map((msg) => {
             if (msg.id === msgId && msg.confirmationCard) {
@@ -658,43 +922,94 @@ function TransactionsContent() {
               if (card.note) {
                 successText += `\nNote: *"${card.note}"*`;
               }
+              if (card.due_date) {
+                successText += `\nDue Date: *"${new Date(card.due_date).toLocaleDateString()}"*`;
+              }
               return {
                 ...msg,
                 text: successText,
-                confirmationCard: { ...card, status: "saved" }
+                confirmationCard: updatedCard
               };
             }
             return msg;
           })
         );
-      } catch (err) {
+      } catch (err: any) {
         console.error("Error inside saveAICard:", err);
-        alert("Failed to save transaction: " + (err as any).message);
+        alert("Failed to save transaction: " + err.message);
       }
     };
 
     if (isDebt && card.partner && !matchedPartner) {
-      // Trigger confirmation dialog
       setPartnerConfirmData({
         partnerName: card.partner.trim(),
         onConfirm: async (createdPartnerId: string) => {
           await saveAICard(createdPartnerId);
         },
-        onCancel: () => {
-          // Do nothing, just close dialog
-        }
+        onCancel: () => {}
       });
     } else {
-      // Direct save
       try {
         await saveAICard(partnerId);
-      } catch (err) {
-        console.error("Error saving AI transaction:", err);
-      }
+      } catch (err) {}
     }
   };
 
-  // Markdown Parser
+  // Fetch AI Chat messages history on-demand
+  const fetchChatHistory = async () => {
+    if (!user) return;
+    setHistoryLoading(true);
+    setHistoryOpen(true);
+    try {
+      let query = supabase.from("chat_messages").select("*").order("created_at", { ascending: true });
+      
+      const now = new Date();
+      if (historyPeriod === "today") {
+        const todayStart = new Date(now.setHours(0,0,0,0)).toISOString();
+        query = query.gte("created_at", todayStart);
+      } else if (historyPeriod === "week") {
+        const weekStart = new Date(now.setDate(now.getDate() - 7)).toISOString();
+        query = query.gte("created_at", weekStart);
+      } else if (historyPeriod === "month") {
+        const monthStart = new Date(now.setMonth(now.getMonth() - 1)).toISOString();
+        query = query.gte("created_at", monthStart);
+      }
+
+      const { data } = await query;
+
+      const formatted = (data || []).map((msg: any) => ({
+        id: msg.id,
+        sender: msg.sender,
+        text: msg.text,
+        time: new Date(msg.created_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+        confirmationCard: msg.confirmation_card ? {
+          type: msg.confirmation_card.type,
+          amount: Number(msg.confirmation_card.amount),
+          wallet: msg.confirmation_card.wallet,
+          category: msg.confirmation_card.category,
+          description: msg.confirmation_card.description,
+          partner: msg.confirmation_card.partner,
+          due_date: msg.confirmation_card.due_date,
+          note: msg.confirmation_card.note,
+          status: msg.confirmation_card.status
+        } : undefined
+      }));
+
+      setHistoryMessages(formatted);
+    } catch (err) {
+      console.error("Error loading chat history:", err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (historyOpen) {
+      fetchChatHistory();
+    }
+  }, [historyPeriod]);
+
+  // Markdown Render
   const renderMessageText = (text: string) => {
     const lines = text.split("\n");
     return (
@@ -718,7 +1033,7 @@ function TransactionsContent() {
 
           if (isBullet) {
             return (
-              <div key={idx} className="flex items-start gap-2 ml-4 my-0.5">
+              <div key={idx} className="flex items-start gap-2 ml-4 my-0.5 animate-fade-in">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mt-1.5 shrink-0" />
                 <span className="flex-1">{content}</span>
               </div>
@@ -752,21 +1067,45 @@ function TransactionsContent() {
     return text;
   };
 
-  // --- FILTERS LOGIC ---
+  // --- FILTERS & SEARCH PROCESS ---
   const filteredTransactions = transactions.filter((tx) => {
-    const matchesWallet = filterWalletId === "All" || tx.wallet_id === filterWalletId;
+    const matchesWallet = filterWalletId === "All" || tx.wallet_id === filterWalletId || tx.to_wallet_id === filterWalletId;
     const matchesCategory = filterCategoryId === "All" || tx.category_id === filterCategoryId;
+    const matchesType = filterType === "All" || tx.type === filterType;
+    const matchesPartner = filterPartnerId === "All" || tx.debt_partner_id === filterPartnerId;
+    
+    let matchesDate = true;
+    const txDate = new Date(tx.created_at);
+    if (filterStartDate) {
+      const start = new Date(filterStartDate);
+      start.setHours(0, 0, 0, 0);
+      matchesDate = matchesDate && txDate >= start;
+    }
+    if (filterEndDate) {
+      const end = new Date(filterEndDate);
+      end.setHours(23, 59, 59, 999);
+      matchesDate = matchesDate && txDate <= end;
+    }
+
     const matchesSearch = 
       tx.description.toLowerCase().includes(searchQuery.toLowerCase()) || 
       (tx.category_name && tx.category_name.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (tx.note && tx.note.toLowerCase().includes(searchQuery.toLowerCase()));
     
-    return matchesWallet && matchesCategory && matchesSearch;
+    return matchesWallet && matchesCategory && matchesType && matchesPartner && matchesDate && matchesSearch;
   });
 
-  // Group by Date string
+  // Calculate Pagination slices
+  const totalItems = filteredTransactions.length;
+  const totalPages = Math.ceil(totalItems / itemsPerPage) || 1;
+  const paginatedTransactions = filteredTransactions.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
+
+  // Group Paginated Transactions by Date string
   const groupedTransactions: { [key: string]: Transaction[] } = {};
-  filteredTransactions.forEach((tx) => {
+  paginatedTransactions.forEach((tx) => {
     const groupKey = tx.dateStr || "Unknown Date";
     if (!groupedTransactions[groupKey]) {
       groupedTransactions[groupKey] = [];
@@ -774,22 +1113,74 @@ function TransactionsContent() {
     groupedTransactions[groupKey].push(tx);
   });
 
-  const getTxIconComponent = (category: string) => {
-    const cat = category.toLowerCase();
-    if (cat.includes("dining") || cat.includes("ăn uống") || cat.includes("coffee") || cat.includes("cafe")) return Coffee;
-    if (cat.includes("income") || cat.includes("lương")) return DollarSign;
-    if (cat.includes("loans") || cat.includes("nợ")) return TrendingUp;
-    if (cat.includes("shopping") || cat.includes("mua sắm")) return ShoppingBag;
-    if (cat.includes("repayments") || cat.includes("trả nợ")) return UserCheck;
-    return Coffee;
+  const getCategoryIconComponent = (iconName?: string | null) => {
+    switch (iconName) {
+      case "Coffee": return Coffee;
+      case "ShoppingBag": return ShoppingBag;
+      case "Home": return Home;
+      case "Car": return Car;
+      case "Activity": return Activity;
+      case "BookOpen": return BookOpen;
+      case "Gamepad2": return Gamepad2;
+      case "DollarSign": return DollarSign;
+      case "TrendingUp": return TrendingUp;
+      case "Gift": return Gift;
+      default: return Tag;
+    }
   };
+
+  const getTxIconComponent = (tx: Transaction) => {
+    if (tx.type === "TRANSFER") return ArrowRight;
+    if (tx.type === "DEBT_LENT" || tx.type === "DEBT_BORROWED") return TrendingUp;
+    if (tx.type === "DEBT_REPAYMENT") return UserCheck;
+    
+    const cat = categories.find(c => c.id === tx.category_id);
+    return getCategoryIconComponent(cat?.icon);
+  };
+
+  // Convert categories list to select choices
+  const categoryFilterOptions = [
+    { value: "All", label: "All Categories" },
+    ...categories.map((c) => ({
+      value: c.id,
+      label: `${c.name} (${c.type === "EXPENSE" ? "Expense" : "Income"})`,
+      icon: getCategoryIconComponent(c.icon)
+    }))
+  ];
+
+  const walletFilterOptions = [
+    { value: "All", label: "All Wallets", icon: WalletIcon },
+    ...wallets.map((w) => ({
+      value: w.id,
+      label: `${w.name} ${w.is_hidden ? "[Hidden]" : ""}`,
+      icon: w.is_credit_card ? CreditCard : w.is_hidden ? EyeOff : WalletIcon
+    }))
+  ];
+
+  const typeFilterOptions = [
+    { value: "All", label: "All Types" },
+    { value: "EXPENSE", label: "Expense" },
+    { value: "INCOME", label: "Income" },
+    { value: "TRANSFER", label: "Transfer" },
+    { value: "DEBT_LENT", label: "Lent" },
+    { value: "DEBT_BORROWED", label: "Borrowed" },
+    { value: "DEBT_REPAYMENT", label: "Repayment" }
+  ];
+
+  const partnerFilterOptions = [
+    { value: "All", label: "All Partners" },
+    ...debtPartners.map((dp) => ({
+      value: dp.id,
+      label: dp.name
+    }))
+  ];
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-background text-foreground relative">
       
       {/* 1. TAB CONTROLLER */}
       <div className="pt-3 shrink-0">
-        <div className="flex p-1 bg-card border border-border rounded-2xl max-w-md mx-auto">
+        <div className="flex p-1 bg-card border border-border rounded-2xl max-w-md mx-auto shadow-sm">
           <button
             onClick={() => setActiveTab("history")}
             className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-semibold rounded-xl transition-all duration-200 cursor-pointer ${
@@ -820,13 +1211,13 @@ function TransactionsContent() {
         {loading && transactions.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center py-12 text-xs text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin text-emerald-500 mb-2" />
-            <span>Loading transaction histories...</span>
+            <span>Loading transactions database...</span>
           </div>
         ) : (
           <>
             {/* --- TAB 1: HISTORY --- */}
             {activeTab === "history" && (
-              <div className="space-y-4 max-w-2xl mx-auto">
+              <div className="space-y-4 max-w-2xl mx-auto px-2">
                 
                 {/* Search Input, Filter Toggle & Manual Add Button */}
                 <div className="flex gap-2">
@@ -836,13 +1227,16 @@ function TransactionsContent() {
                       type="text"
                       placeholder="Search transactions..."
                       value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full bg-card border border-border rounded-xl py-2 pl-10 pr-4 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40"
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        setCurrentPage(1);
+                      }}
+                      className="w-full bg-card border border-border rounded-xl py-2.5 pl-10 pr-4 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40"
                     />
                   </div>
                   <button
                     onClick={() => setShowFilters(!showFilters)}
-                    className={`p-2 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
+                    className={`p-2.5 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
                       showFilters 
                         ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-500" 
                         : "bg-card border-border text-muted-foreground hover:text-foreground"
@@ -852,35 +1246,30 @@ function TransactionsContent() {
                   </button>
                   <button
                     onClick={openCreateForm}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 rounded-xl text-xs font-bold shadow-md shadow-emerald-500/10 transition-all cursor-pointer shrink-0"
+                    className="flex items-center gap-1.5 px-3.5 py-2.5 bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 rounded-xl text-xs font-bold shadow-md shadow-emerald-500/10 transition-all cursor-pointer shrink-0"
                   >
                     <Plus className="h-4 w-4 stroke-[2.5]" />
                     <span className="hidden sm:inline">Add</span>
                   </button>
                 </div>
 
-                {/* Expandable Filter Grid */}
+                {/* Expandable Advanced Filter Grid */}
                 {showFilters && (
-                  <div className="p-4 rounded-2xl bg-card border border-border grid grid-cols-2 gap-3 animate-fade-in text-foreground">
+                  <div className="p-4 rounded-2xl bg-card border border-border grid grid-cols-1 sm:grid-cols-2 gap-3.5 animate-fade-in text-foreground">
                     <div>
-                      <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1.5">Wallet Account</label>
-                      <div className="relative">
-                        <select
-                          value={filterWalletId}
-                          onChange={(e) => setFilterWalletId(e.target.value)}
-                          className="w-full bg-background border border-border rounded-lg p-2 text-xs text-foreground appearance-none focus:outline-none"
-                        >
-                          <option value="All">All Wallets</option>
-                          {wallets.map((w) => (
-                            <option key={w.id} value={w.id}>{w.name}</option>
-                          ))}
-                        </select>
-                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                      </div>
+                      <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">Wallet Account</label>
+                      <Select
+                        value={filterWalletId}
+                        onValueChange={(val) => {
+                          setFilterWalletId(val);
+                          setCurrentPage(1);
+                        }}
+                        options={walletFilterOptions}
+                      />
                     </div>
 
                     <div>
-                      <div className="flex justify-between items-center mb-1.5">
+                      <div className="flex justify-between items-center mb-1">
                         <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category</label>
                         <button 
                           onClick={() => setIsManageCategoriesOpen(true)}
@@ -889,18 +1278,64 @@ function TransactionsContent() {
                           Manage
                         </button>
                       </div>
-                      <div className="relative">
-                        <select
-                          value={filterCategoryId}
-                          onChange={(e) => setFilterCategoryId(e.target.value)}
-                          className="w-full bg-background border border-border rounded-lg p-2 text-xs text-foreground appearance-none focus:outline-none"
-                        >
-                          <option value="All">All Categories</option>
-                          {categories.map((c) => (
-                            <option key={c.id} value={c.id}>{c.name}</option>
-                          ))}
-                        </select>
-                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                      <Select
+                        value={filterCategoryId}
+                        onValueChange={(val) => {
+                          setFilterCategoryId(val);
+                          setCurrentPage(1);
+                        }}
+                        options={categoryFilterOptions}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">Transaction Type</label>
+                      <Select
+                        value={filterType}
+                        onValueChange={(val) => {
+                          setFilterType(val);
+                          setCurrentPage(1);
+                        }}
+                        options={typeFilterOptions}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">Debt Partner</label>
+                      <Select
+                        value={filterPartnerId}
+                        onValueChange={(val) => {
+                          setFilterPartnerId(val);
+                          setCurrentPage(1);
+                        }}
+                        options={partnerFilterOptions}
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2 grid grid-cols-2 gap-2 pt-1.5 border-t border-dashed border-border">
+                      <div>
+                        <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">Start Date</label>
+                        <input
+                          type="date"
+                          value={filterStartDate}
+                          onChange={(e) => {
+                            setFilterStartDate(e.target.value);
+                            setCurrentPage(1);
+                          }}
+                          className="w-full bg-background border border-border rounded-xl p-2.5 text-xs text-foreground focus:outline-none focus:border-emerald-500/40"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">End Date</label>
+                        <input
+                          type="date"
+                          value={filterEndDate}
+                          onChange={(e) => {
+                            setFilterEndDate(e.target.value);
+                            setCurrentPage(1);
+                          }}
+                          className="w-full bg-background border border-border rounded-xl p-2.5 text-xs text-foreground focus:outline-none focus:border-emerald-500/40"
+                        />
                       </div>
                     </div>
                   </div>
@@ -914,7 +1349,7 @@ function TransactionsContent() {
                         <h4 className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider px-1">{date}</h4>
                         <div className="space-y-2">
                           {groupedTransactions[date].map((tx) => {
-                            const Icon = getTxIconComponent(tx.category_name || "");
+                            const Icon = getTxIconComponent(tx);
                             const isExpense = tx.type === "EXPENSE" || tx.type === "DEBT_LENT" || tx.type === "TRANSFER";
                             const amtVal = Number(tx.amount);
 
@@ -938,11 +1373,23 @@ function TransactionsContent() {
                                       <span>{new Date(tx.created_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}</span>
                                       <span>•</span>
                                       <span>{tx.wallet_name}</span>
+                                      {tx.to_wallet_name && (
+                                        <>
+                                          <ArrowRight className="h-2 w-2 mx-0.5 inline" />
+                                          <span>{tx.to_wallet_name}</span>
+                                        </>
+                                      )}
                                     </div>
                                     
                                     {tx.note && (
                                       <p className="text-[9px] text-muted-foreground/80 italic mt-1 font-medium bg-accent/40 px-1.5 py-0.5 rounded inline-block">
                                         Note: "{tx.note}"
+                                      </p>
+                                    )}
+
+                                    {tx.due_date && tx.status !== "COMPLETED" && (
+                                      <p className="text-[9px] text-yellow-600 dark:text-yellow-400 font-bold bg-yellow-500/10 px-1.5 py-0.5 rounded inline-block mt-1">
+                                        Due: {new Date(tx.due_date).toLocaleDateString()}
                                       </p>
                                     )}
                                   </div>
@@ -961,9 +1408,32 @@ function TransactionsContent() {
                         </div>
                       </div>
                     ))}
+
+                    {/* Pagination Controls */}
+                    {totalPages > 1 && (
+                      <div className="flex items-center justify-between border-t border-border pt-4 text-xs">
+                        <button
+                          onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                          disabled={currentPage === 1}
+                          className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border bg-card text-muted-foreground hover:text-foreground disabled:opacity-50 cursor-pointer"
+                        >
+                          <ChevronLeft className="h-4 w-4" /> Previous
+                        </button>
+                        <span className="text-muted-foreground font-medium">
+                          Page {currentPage} of {totalPages}
+                        </span>
+                        <button
+                          onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                          disabled={currentPage === totalPages}
+                          className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border bg-card text-muted-foreground hover:text-foreground disabled:opacity-50 cursor-pointer"
+                        >
+                          Next <ChevronRight className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : (
-                  <div className="py-12 text-center">
+                  <div className="py-12 text-center bg-card border border-border border-dashed rounded-2xl">
                     <p className="text-xs text-muted-foreground">No matching transactions found.</p>
                   </div>
                 )}
@@ -972,10 +1442,24 @@ function TransactionsContent() {
 
             {/* --- TAB 2: AI CHAT --- */}
             {activeTab === "ai" && (
-              <div className="flex flex-col h-full space-y-4 max-w-2xl mx-auto">
+              <div className="flex flex-col h-full space-y-4 max-w-2xl mx-auto px-2 relative min-h-[450px]">
                 
+                {/* Header Actions */}
+                <div className="flex justify-between items-center bg-card/45 border border-border p-3 rounded-2xl shadow-sm">
+                  <div className="flex items-center gap-1.5">
+                    <Sparkles className="h-4 w-4 text-emerald-500 animate-pulse" />
+                    <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide">AI Assistant Console</span>
+                  </div>
+                  <button 
+                    onClick={fetchChatHistory}
+                    className="text-[10px] text-emerald-500 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    🕒 Review past chats
+                  </button>
+                </div>
+
                 {/* Messages display */}
-                <div className="flex-1 space-y-4 min-h-[350px]">
+                <div className="flex-1 space-y-4 min-h-[300px]">
                   {messages.map((msg) => {
                     const isAI = msg.sender === "ai";
                     return (
@@ -996,67 +1480,73 @@ function TransactionsContent() {
 
                         {/* CONFIRMATION CARD */}
                         {isAI && msg.confirmationCard && msg.confirmationCard.status === "pending" && (
-                          <div className="w-[85%] mt-2 rounded-2xl bg-gradient-to-b from-slate-900 to-slate-950 border-2 border-emerald-500/40 p-4 shadow-md space-y-4">
-                            <div className="flex items-center justify-between border-b border-border pb-2">
-                              <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider flex items-center gap-1">
-                                <Sparkles className="h-3 w-3" /> Confirm Transaction
+                          <div className="w-[85%] mt-2 rounded-2xl bg-gradient-to-b from-slate-900 to-slate-950 border-2 border-emerald-500/40 p-4 shadow-md space-y-4 text-white">
+                            <div className="flex items-center justify-between border-b border-border/20 pb-2">
+                              <span className="text-[10px] font-bold text-emerald-450 uppercase tracking-wider flex items-center gap-1">
+                                <Sparkle className="h-3 w-3 text-emerald-500 animate-spin" /> Confirm AI Extraction
                               </span>
                               <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
                                 msg.confirmationCard.type === "EXPENSE" || msg.confirmationCard.type === "DEBT_LENT"
-                                  ? "bg-rose-500/10 text-rose-500" 
-                                  : "bg-emerald-500/10 text-emerald-500"
+                                  ? "bg-rose-500/20 text-rose-450" 
+                                  : "bg-emerald-500/20 text-emerald-450"
                               }`}>
                                 {msg.confirmationCard.type === "EXPENSE" && "Expense"}
                                 {msg.confirmationCard.type === "INCOME" && "Income"}
                                 {msg.confirmationCard.type === "DEBT_LENT" && "Lent (Loan)"}
                                 {msg.confirmationCard.type === "DEBT_BORROWED" && "Borrowed (Debt)"}
+                                {msg.confirmationCard.type === "DEBT_REPAYMENT" && "Repayment"}
                               </span>
                             </div>
 
                             <div className="space-y-2 text-xs">
                               <div className="flex justify-between">
-                                <span className="text-muted-foreground">Description:</span>
-                                <span className="font-semibold text-foreground">{msg.confirmationCard.description}</span>
+                                <span className="text-slate-400">Description:</span>
+                                <span className="font-semibold">{msg.confirmationCard.description}</span>
                               </div>
                               <div className="flex justify-between">
-                                <span className="text-muted-foreground">Amount:</span>
-                                <span className="font-bold text-foreground font-heading">{formatCurrency(msg.confirmationCard.amount)}</span>
+                                <span className="text-slate-400">Amount:</span>
+                                <span className="font-bold text-emerald-400 font-heading">{formatCurrency(msg.confirmationCard.amount)}</span>
                               </div>
                               <div className="flex justify-between">
-                                <span className="text-muted-foreground">Wallet Account:</span>
-                                <span className="font-medium text-emerald-600 dark:text-emerald-400">{msg.confirmationCard.wallet}</span>
+                                <span className="text-slate-400">Wallet:</span>
+                                <span className="font-medium text-emerald-400">{msg.confirmationCard.wallet}</span>
                               </div>
                               {msg.confirmationCard.partner && (
                                 <div className="flex justify-between">
-                                  <span className="text-muted-foreground">Debt Partner:</span>
+                                  <span className="text-slate-400">Partner:</span>
                                   <span className="font-semibold text-amber-500">{msg.confirmationCard.partner}</span>
                                 </div>
                               )}
                               {msg.confirmationCard.category && (
                                 <div className="flex justify-between">
-                                  <span className="text-muted-foreground">Category:</span>
+                                  <span className="text-slate-400">Category:</span>
                                   <span className="font-medium">{msg.confirmationCard.category}</span>
                                 </div>
                               )}
-                              
+                              {msg.confirmationCard.due_date && (
+                                <div className="flex justify-between">
+                                  <span className="text-slate-400">Due Date:</span>
+                                  <span className="font-semibold text-yellow-500">{new Date(msg.confirmationCard.due_date).toLocaleDateString()}</span>
+                                </div>
+                              )}
                               {msg.confirmationCard.note && (
-                                <div className="flex justify-between border-t border-dashed border-border pt-1.5 mt-1.5">
-                                  <span className="text-muted-foreground">Note:</span>
-                                  <span className="font-medium italic text-slate-700 dark:text-slate-300">"{msg.confirmationCard.note}"</span>
+                                <div className="flex justify-between border-t border-dashed border-border/20 pt-1.5 mt-1.5">
+                                  <span className="text-slate-400">Note:</span>
+                                  <span className="font-medium italic text-slate-300">"{msg.confirmationCard.note}"</span>
                                 </div>
                               )}
                             </div>
 
-                            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border">
+                            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border/20">
                               <button
                                 onClick={() => handleConfirmCard(msg.id, "cancel")}
-                                className="flex items-center justify-center gap-1.5 py-2 rounded-xl bg-card border border-border hover:bg-accent text-muted-foreground hover:text-foreground transition-colors cursor-pointer text-[11px] font-semibold"
+                                className="flex items-center justify-center gap-1.5 py-2 rounded-xl bg-card border border-border/20 hover:bg-accent text-muted-foreground hover:text-foreground transition-colors cursor-pointer text-[11px] font-semibold"
                               >
                                 <X className="h-3.5 w-3.5" /> Cancel
                               </button>
                               <button
                                 onClick={() => handleConfirmCard(msg.id, "save")}
-                                className="flex items-center justify-center gap-1.5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-[11px]"
+                                className="flex items-center justify-center gap-1.5 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold hover:bg-emerald-400 transition-all cursor-pointer text-[11px]"
                               >
                                 <Check className="h-3.5 w-3.5" /> Save
                               </button>
@@ -1070,7 +1560,7 @@ function TransactionsContent() {
                   {/* AI Typing Indicator */}
                   {isTyping && (
                     <div className="flex flex-col items-start space-y-1">
-                      <span className="text-[8px] text-muted-foreground font-medium px-2">Analyzing</span>
+                      <span className="text-[8px] text-muted-foreground font-medium px-2">Analyzing...</span>
                       <div className="bg-card border border-border py-2.5 px-4 rounded-2xl rounded-tl-sm text-xs flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" />
                         <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce [animation-delay:0.2s]" />
@@ -1133,30 +1623,28 @@ function TransactionsContent() {
                 {/* Type Select */}
                 <div className="space-y-1">
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Type</label>
-                  <div className="relative">
-                    <select
-                      value={formType}
-                      onChange={(e) => {
-                        const val = e.target.value as any;
-                        setFormType(val);
-                        // Clear category if switching to debt-related types
-                        if (val === "DEBT_LENT" || val === "DEBT_BORROWED" || val === "DEBT_REPAYMENT") {
-                          setFormCategoryId("");
-                        } else {
-                          setFormPartnerId("");
-                          setFormNewPartnerName("");
-                        }
-                      }}
-                      className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none focus:border-emerald-500/40 font-semibold"
-                    >
-                      <option value="EXPENSE">Expense</option>
-                      <option value="INCOME">Income</option>
-                      <option value="DEBT_LENT">Lent (Loan)</option>
-                      <option value="DEBT_BORROWED">Borrowed (Debt)</option>
-                      <option value="DEBT_REPAYMENT">Repayment</option>
-                    </select>
-                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-                  </div>
+                  <Select
+                    value={formType}
+                    onValueChange={(val) => {
+                      setFormType(val);
+                      setErrors({});
+                      if (val === "DEBT_LENT" || val === "DEBT_BORROWED" || val === "DEBT_REPAYMENT") {
+                        setFormCategoryId("");
+                      } else {
+                        setFormPartnerId("");
+                        setFormNewPartnerName("");
+                        setFormDueDate("");
+                      }
+                    }}
+                    options={[
+                      { value: "EXPENSE", label: "Expense" },
+                      { value: "INCOME", label: "Income" },
+                      { value: "TRANSFER", label: "Transfer" },
+                      { value: "DEBT_LENT", label: "Lent" },
+                      { value: "DEBT_BORROWED", label: "Borrowed" },
+                      { value: "DEBT_REPAYMENT", label: "Repayment" }
+                    ]}
+                  />
                 </div>
 
                 {/* Amount Input */}
@@ -1168,8 +1656,9 @@ function TransactionsContent() {
                     value={formAmount}
                     onChange={(e) => setFormAmount(e.target.value)}
                     placeholder="e.g. 50000"
-                    className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                    className="w-full bg-background border border-border rounded-xl py-2.5 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                   />
+                  {errors.amount && <span className="text-[10px] text-rose-500 block mt-0.5 leading-normal">{errors.amount}</span>}
                 </div>
               </div>
 
@@ -1181,52 +1670,63 @@ function TransactionsContent() {
                   required
                   value={formDescription}
                   onChange={(e) => setFormDescription(e.target.value)}
-                  placeholder="e.g. Highlands Coffee, Salad lunch"
+                  placeholder="e.g. Starbucks, Salary, Lent to Huy"
                   className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                 />
+                {errors.description && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.description}</span>}
               </div>
 
-              {/* Wallet Select */}
+              {/* Wallet select (From Wallet if TRANSFER) */}
               <div className="space-y-1">
-                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Account/Wallet Source</label>
-                <div className="relative">
-                  <select
-                    required
-                    value={formWalletId}
-                    onChange={(e) => setFormWalletId(e.target.value)}
-                    className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none focus:border-emerald-500/40 font-semibold"
-                  >
-                    <option value="" disabled>Select Wallet</option>
-                    {wallets.map((w) => (
-                      <option key={w.id} value={w.id}>{w.name} ({w.balance.toLocaleString()} VND)</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-                </div>
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">
+                  {formType === "TRANSFER" ? "From Wallet" : "Account/Wallet"}
+                </label>
+                <Select
+                  value={formWalletId}
+                  onValueChange={(val) => setFormWalletId(val)}
+                  options={wallets.filter(w => !w.is_hidden).map(w => ({
+                    value: w.id,
+                    label: `${w.name} (${w.balance.toLocaleString()} VND)`
+                  }))}
+                />
+                {errors.walletId && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.walletId}</span>}
               </div>
 
-              {/* Conditional Selector: Category (for expense/income) OR Partner (for debt-related) */}
-              {formType === "EXPENSE" || formType === "INCOME" ? (
-                /* Category Select */
+              {/* Destination Wallet select (Only for TRANSFER) */}
+              {formType === "TRANSFER" && (
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">To Wallet</label>
+                  <Select
+                    value={formToWalletId}
+                    onValueChange={(val) => setFormToWalletId(val)}
+                    options={wallets.filter(w => !w.is_hidden).map(w => ({
+                      value: w.id,
+                      label: `${w.name} (${w.balance.toLocaleString()} VND)`
+                    }))}
+                  />
+                  {errors.toWalletId && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.toWalletId}</span>}
+                </div>
+              )}
+
+              {/* Category selector for expense/income */}
+              {(formType === "EXPENSE" || formType === "INCOME") && (
                 <div className="space-y-1">
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category</label>
-                  <div className="relative">
-                    <select
-                      required
-                      value={formCategoryId}
-                      onChange={(e) => setFormCategoryId(e.target.value)}
-                      className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none focus:border-emerald-500/40 font-semibold"
-                    >
-                      <option value="" disabled>Select Category</option>
-                      {categories.filter(c => c.type === formType).map((c) => (
-                        <option key={c.id} value={c.id}>{c.name}</option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-                  </div>
+                  <Select
+                    value={formCategoryId}
+                    onValueChange={(val) => setFormCategoryId(val)}
+                    options={categories.filter(c => c.type === formType).map(c => ({
+                      value: c.id,
+                      label: c.name,
+                      icon: getCategoryIconComponent(c.icon)
+                    }))}
+                  />
+                  {errors.categoryId && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.categoryId}</span>}
                 </div>
-              ) : (
-                /* Debt Partner Select */
+              )}
+
+              {/* Partner selection for loans/debts */}
+              {(isDebt || isRepayment) && (
                 <div className="space-y-1">
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Debt Partner</label>
                   <div className="relative">
@@ -1249,59 +1749,73 @@ function TransactionsContent() {
                     </select>
                     <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
                   </div>
+                  {errors.partnerId && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.partnerId}</span>}
                 </div>
               )}
 
-              {/* New Partner Name Input (conditionally shown) */}
-              {(formType === "DEBT_LENT" || formType === "DEBT_BORROWED" || formType === "DEBT_REPAYMENT") && formPartnerId === "NEW" && (
-                <div className="space-y-1 animate-fade-in">
+              {/* Add New Partner input */}
+              {(isDebt || isRepayment) && formPartnerId === "NEW" && (
+                <div className="space-y-1">
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">New Partner Name</label>
                   <input
                     type="text"
                     required
                     value={formNewPartnerName}
                     onChange={(e) => setFormNewPartnerName(e.target.value)}
-                    placeholder="e.g. Anh Huy, Nam"
-                    className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                    placeholder="e.g. Anh Huy"
+                    className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                  />
+                  {errors.newPartnerName && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.newPartnerName}</span>}
+                </div>
+              )}
+
+              {/* Due Date picker for debts */}
+              {isDebt && (
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Due Date (Optional)</label>
+                  <input
+                    type="date"
+                    value={formDueDate}
+                    onChange={(e) => setFormDueDate(e.target.value)}
+                    className="w-full bg-background border border-border rounded-xl p-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                   />
                 </div>
               )}
 
               {/* Note Input */}
               <div className="space-y-1">
-                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Note / Memo (Optional)</label>
+                <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Note / Ghi chú (Optional)</label>
                 <textarea
                   value={formNote}
                   onChange={(e) => setFormNote(e.target.value)}
-                  placeholder="e.g. Lunch with developers, client meeting"
-                  rows={2}
-                  className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 resize-none font-medium"
+                  placeholder="Additional memo..."
+                  className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold h-16 resize-none"
                 />
               </div>
 
-              {/* Modal Actions Footer */}
+              {/* Action Buttons */}
               <div className="flex gap-2 pt-3 border-t border-border">
                 {editingTx && (
                   <button
                     type="button"
                     onClick={() => handleDeleteTx(editingTx.id)}
-                    disabled={submitting}
-                    className="flex-1 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 font-bold transition-colors cursor-pointer text-xs text-center border border-rose-500/20 flex items-center justify-center"
+                    className="px-3.5 py-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/25 border border-rose-500/20 text-rose-500 transition-colors cursor-pointer text-xs flex items-center justify-center"
+                    title="Delete Transaction"
                   >
-                    Delete
+                    <Trash2 className="h-4 w-4" />
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={() => setIsFormOpen(false)}
-                  className="flex-1 py-2 rounded-xl bg-accent border border-border text-muted-foreground hover:text-foreground font-semibold transition-colors cursor-pointer text-xs text-center"
+                  className="flex-1 py-2.5 rounded-xl bg-accent border border-border text-muted-foreground hover:text-foreground font-semibold transition-colors cursor-pointer text-xs"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-xs text-center flex items-center justify-center"
+                  className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-bold transition-all disabled:opacity-50 cursor-pointer text-xs flex items-center justify-center"
                 >
                   {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
                 </button>
@@ -1315,7 +1829,7 @@ function TransactionsContent() {
       {isManageCategoriesOpen && (
         <Portal>
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-            <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[80%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
+            <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[85%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
               <div className="flex items-center justify-between pb-3 border-b border-border">
                 <h3 className="text-sm font-bold font-heading">Manage Categories</h3>
                 <button
@@ -1324,6 +1838,7 @@ function TransactionsContent() {
                     setIsManageCategoriesOpen(false);
                     setEditingCategory(null);
                     setNewCategoryName("");
+                    setNewCategoryIcon("HelpCircle");
                   }}
                   className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
                 >
@@ -1331,81 +1846,127 @@ function TransactionsContent() {
                 </button>
               </div>
 
-              {/* Form to Add/Edit Category */}
+              {/* Form Category Add/Edit */}
               <form 
                 onSubmit={editingCategory ? handleUpdateCategory : handleAddCategory}
-                className="p-4 bg-background border border-border rounded-2xl grid grid-cols-1 sm:grid-cols-3 gap-3 items-end"
+                className="p-4 bg-background border border-border rounded-2xl grid grid-cols-1 gap-3 text-foreground"
               >
-                <div className="space-y-1 sm:col-span-1.5">
+                <h4 className="text-xs font-bold border-b border-border pb-1">
+                  {editingCategory ? "Edit Category Details" : "Create New Category"}
+                </h4>
+
+                <div className="space-y-1">
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category Name</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Health, Coffee"
-                    value={newCategoryName}
-                    onChange={(e) => setNewCategoryName(e.target.value)}
-                    className="w-full bg-card border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      required
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      placeholder="e.g. Cosmetics, Books, Rent"
+                      className="flex-1 bg-card border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={suggestCategoryIcon}
+                      disabled={suggestingIcon}
+                      className="px-3 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/20 rounded-xl text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                    >
+                      {suggestingIcon ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      Suggest Icon
+                    </button>
+                  </div>
                 </div>
 
                 <div className="space-y-1">
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Type</label>
-                  <div className="relative">
-                    <select
-                      value={newCategoryType}
-                      onChange={(e) => setNewCategoryType(e.target.value as "INCOME" | "EXPENSE")}
-                      className="w-full bg-card border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none"
-                    >
-                      <option value="EXPENSE">Expense</option>
-                      <option value="INCOME">Income</option>
-                    </select>
-                    <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                  <Select
+                    value={newCategoryType}
+                    onValueChange={(val) => setNewCategoryType(val as "INCOME" | "EXPENSE")}
+                    options={[
+                      { value: "EXPENSE", label: "Expense (Chi tiêu)" },
+                      { value: "INCOME", label: "Income (Thu nhập)" }
+                    ]}
+                  />
+                </div>
+
+                {/* Icon Grid Choice */}
+                <div className="space-y-1.5">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Select Custom Icon</label>
+                  <div className="grid grid-cols-6 gap-2">
+                    {[
+                      "Coffee", "ShoppingBag", "Home", "Car", "Activity", "BookOpen", "Gamepad2", "DollarSign", "TrendingUp", "Gift", "HelpCircle"
+                    ].map((name) => {
+                      const IconComp = getCategoryIconComponent(name);
+                      const isSelected = newCategoryIcon === name;
+                      return (
+                        <button
+                          key={name}
+                          type="button"
+                          onClick={() => setNewCategoryIcon(name)}
+                          className={`p-2 rounded-lg border flex items-center justify-center cursor-pointer transition-colors ${
+                            isSelected 
+                              ? "border-emerald-500 bg-emerald-500/15 text-emerald-500" 
+                              : "border-border bg-card hover:bg-accent/40 text-muted-foreground"
+                          }`}
+                        >
+                          <IconComp className="h-4 w-4" />
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
                 <button
                   type="submit"
-                  className="py-2.5 rounded-xl bg-emerald-500 text-slate-950 hover:bg-emerald-400 font-bold text-xs cursor-pointer flex items-center justify-center"
+                  className="py-2.5 rounded-xl bg-emerald-500 text-slate-950 hover:bg-emerald-400 font-bold text-xs cursor-pointer flex items-center justify-center mt-1"
                 >
-                  {editingCategory ? "Update" : "Add Category"}
+                  {editingCategory ? "Update Category" : "Create Category"}
                 </button>
               </form>
 
               {/* List Categories */}
-              <div className="space-y-2 max-h-60 overflow-y-auto">
-                {categories.map((c) => (
-                  <div 
-                    key={c.id} 
-                    className="flex items-center justify-between p-3 rounded-xl bg-background border border-border"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold">{c.name}</span>
-                      <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
-                        c.type === "EXPENSE" ? "bg-rose-500/10 text-rose-550" : "bg-emerald-500/10 text-emerald-500"
-                      }`}>
-                        {c.type === "EXPENSE" ? "Expense" : "Income"}
-                      </span>
+              <div className="space-y-2 max-h-52 overflow-y-auto">
+                {categories.map((c) => {
+                  const CatIcon = getCategoryIconComponent(c.icon);
+                  return (
+                    <div 
+                      key={c.id} 
+                      className="flex items-center justify-between p-3 rounded-xl bg-background border border-border"
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className="p-1.5 rounded-lg bg-card text-muted-foreground border border-border">
+                          <CatIcon className="h-3.5 w-3.5" />
+                        </div>
+                        <span className="text-xs font-semibold">{c.name}</span>
+                        <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
+                          c.type === "EXPENSE" ? "bg-rose-500/10 text-rose-550" : "bg-emerald-500/10 text-emerald-500"
+                        }`}>
+                          {c.type === "EXPENSE" ? "Expense" : "Income"}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => {
+                            setEditingCategory(c);
+                            setNewCategoryName(c.name);
+                            setNewCategoryType(c.type);
+                            setNewCategoryIcon(c.icon || "HelpCircle");
+                          }}
+                          className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                        >
+                          <Edit2 className="h-3 w-3" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteCategory(c.id)}
+                          className="p-1.5 rounded-lg text-rose-550 hover:bg-rose-500/10 transition-colors"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          setEditingCategory(c);
-                          setNewCategoryName(c.name);
-                          setNewCategoryType(c.type);
-                        }}
-                        className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                      >
-                        <Edit2 className="h-3 w-3" />
-                      </button>
-                      <button
-                        onClick={() => handleDeleteCategory(c.id)}
-                        className="p-1.5 rounded-lg text-rose-550 hover:bg-rose-500/10 transition-colors"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="pt-3 border-t border-border flex justify-end">
@@ -1414,6 +1975,7 @@ function TransactionsContent() {
                     setIsManageCategoriesOpen(false);
                     setEditingCategory(null);
                     setNewCategoryName("");
+                    setNewCategoryIcon("HelpCircle");
                   }}
                   className="px-4 py-2 rounded-xl bg-accent text-xs font-semibold cursor-pointer"
                 >
@@ -1465,7 +2027,6 @@ function TransactionsContent() {
                   type="button"
                   onClick={async () => {
                     try {
-                      // Case-insensitive duplicate contact check
                       const { data: existing, error: checkErr } = await supabase
                         .from("debt_partners")
                         .select("id")
@@ -1490,7 +2051,7 @@ function TransactionsContent() {
                       setDebtPartners(prev => [...prev, { id: newPartner.id, name: newPartner.name }]);
                       
                       const onConfirmCb = partnerConfirmData.onConfirm;
-                      setPartnerConfirmData(null); // Close the modal immediately before executing callbacks!
+                      setPartnerConfirmData(null);
                       await onConfirmCb(newPartner.id);
                     } catch (err: any) {
                       console.error("Error creating partner in confirmation modal:", err);
@@ -1502,6 +2063,129 @@ function TransactionsContent() {
                   Yes, Create
                 </button>
               </div>
+            </div>
+          </div>
+        </Portal>
+      )}
+
+      {/* --- 5. PAST CHATS HISTORY DIALOG MODAL --- */}
+      {historyOpen && (
+        <Portal>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+            <div className="w-full max-w-2xl bg-card border border-border rounded-3xl p-6 max-h-[85%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
+              
+              <div className="flex items-center justify-between pb-3 border-b border-border">
+                <div className="flex items-center gap-2">
+                  <History className="h-4 w-4 text-emerald-500" />
+                  <h3 className="text-sm font-bold font-heading">AI Chat logs history</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHistoryOpen(false);
+                    setHistoryMessages([]);
+                  }}
+                  className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Period filters */}
+              <div className="flex gap-2">
+                {[
+                  { key: "all", label: "All time" },
+                  { key: "today", label: "Today" },
+                  { key: "week", label: "This Week" },
+                  { key: "month", label: "This Month" }
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    onClick={() => setHistoryPeriod(item.key as any)}
+                    className={`px-3 py-1.5 rounded-lg border text-[10px] font-bold transition-all cursor-pointer ${
+                      historyPeriod === item.key 
+                        ? "bg-emerald-500/10 border-emerald-500/35 text-emerald-555" 
+                        : "bg-background border-border text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Message log items */}
+              <div className="space-y-4 bg-background border border-border p-4 rounded-2xl min-h-[250px] max-h-96 overflow-y-auto">
+                {historyLoading ? (
+                  <div className="flex flex-col items-center justify-center h-48 text-xs text-muted-foreground">
+                    <Loader2 className="h-5 w-5 animate-spin text-emerald-500 mb-2" />
+                    <span>Fetching chat history...</span>
+                  </div>
+                ) : historyMessages.length > 0 ? (
+                  historyMessages.map((msg) => {
+                    const isAI = msg.sender === "ai";
+                    return (
+                      <div 
+                        key={msg.id} 
+                        className={`flex flex-col ${isAI ? "items-start" : "items-end"} space-y-1`}
+                      >
+                        <span className="text-[8px] text-muted-foreground font-semibold px-1">{msg.time}</span>
+                        <div 
+                          className={`max-w-[85%] p-3 rounded-xl text-xs ${
+                            isAI 
+                              ? "bg-card border border-border text-foreground rounded-tl-none" 
+                              : "bg-emerald-500 text-slate-950 font-semibold rounded-tr-none"
+                          }`}
+                        >
+                          {isAI ? renderMessageText(msg.text) : msg.text}
+                        </div>
+
+                        {/* Confirmation Card (Read-only status in history) */}
+                        {isAI && msg.confirmationCard && (
+                          <div className="w-[85%] mt-1 rounded-xl bg-gradient-to-b from-slate-900 to-slate-950 border border-border p-3 space-y-2 text-white text-[11px]">
+                            <div className="flex justify-between border-b border-border/10 pb-1">
+                              <span className="font-bold text-emerald-450 uppercase text-[9px]">{msg.confirmationCard.type}</span>
+                              <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${
+                                msg.confirmationCard.status === "saved" 
+                                  ? "bg-emerald-500/20 text-emerald-400" 
+                                  : msg.confirmationCard.status === "cancelled"
+                                  ? "bg-rose-500/20 text-rose-450"
+                                  : "bg-yellow-500/20 text-yellow-450"
+                              }`}>
+                                {msg.confirmationCard.status.toUpperCase()}
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+                              <span>Description: {msg.confirmationCard.description}</span>
+                              <span>Amount: {formatCurrency(msg.confirmationCard.amount)}</span>
+                              <span>Wallet: {msg.confirmationCard.wallet}</span>
+                              {msg.confirmationCard.category && <span>Category: {msg.confirmationCard.category}</span>}
+                              {msg.confirmationCard.partner && <span>Partner: {msg.confirmationCard.partner}</span>}
+                              {msg.confirmationCard.due_date && <span>Due: {new Date(msg.confirmationCard.due_date).toLocaleDateString()}</span>}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="flex items-center justify-center h-48 text-xs text-muted-foreground">
+                    No chat conversations found in this period.
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-3 border-t border-border flex justify-end">
+                <button
+                  onClick={() => {
+                    setHistoryOpen(false);
+                    setHistoryMessages([]);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-accent text-xs font-semibold cursor-pointer"
+                >
+                  Close History
+                </button>
+              </div>
+
             </div>
           </div>
         </Portal>
