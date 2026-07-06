@@ -50,24 +50,31 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
 
     // 2. Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session) {
-        setUser(session.user);
-        document.cookie = `sb-access-token=${session.access_token}; path=/; max-age=604800; SameSite=Lax; Secure`;
-      } else {
-        setUser(null);
-        document.cookie = "sb-access-token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax; Secure";
-      }
-
-      setLoading(false);
-
-      // Handle redirects client-side for smoother transition
-      if (event === "SIGNED_IN") {
-        if (pathname === "/login" || pathname === "/") {
-          router.push("/dashboard");
+      // TOKEN_REFRESHED and other non-critical events should NOT trigger redirects
+      // Only update user state and redirect on true sign-in/sign-out events
+      if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {
+        if (session) {
+          setUser(session.user);
+          document.cookie = `sb-access-token=${session.access_token}; path=/; max-age=604800; SameSite=Lax; Secure`;
+        }
+        setLoading(false);
+        // Only redirect on explicit SIGNED_IN (not INITIAL_SESSION to avoid loop)
+        if (event === "SIGNED_IN") {
+          if (pathname === "/login" || pathname === "/") {
+            router.push("/dashboard");
+          }
         }
       } else if (event === "SIGNED_OUT") {
+        setUser(null);
+        document.cookie = "sb-access-token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax; Secure";
+        setLoading(false);
         if (pathname !== "/login" && pathname !== "/") {
           router.push("/login");
+        }
+      } else if (event === "TOKEN_REFRESHED") {
+        // Just update the cookie silently — no redirect, no state reset
+        if (session) {
+          document.cookie = `sb-access-token=${session.access_token}; path=/; max-age=604800; SameSite=Lax; Secure`;
         }
       }
     });

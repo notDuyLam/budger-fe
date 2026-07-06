@@ -13,6 +13,7 @@ import {
   Smartphone,
   PiggyBank,
   EyeOff,
+  Eye,
   ChevronRight,
   Coffee,
   DollarSign,
@@ -27,7 +28,9 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/shared/AuthProvider";
 import Portal from "@/components/shared/Portal";
+import { MoneyInput } from "@/components/ui/money-input";
 import { z } from "zod";
+import { toast } from "sonner";
 
 interface Wallet {
   id: string;
@@ -35,6 +38,7 @@ interface Wallet {
   balance: number;
   is_credit_card?: boolean;
   is_hidden?: boolean;
+  is_balance_masked?: boolean;
   color?: string | null;
   icon?: string | null;
   created_at: string;
@@ -85,6 +89,7 @@ export default function Dashboard() {
   const [startingBalance, setStartingBalance] = useState("");
   const [isCreditCard, setIsCreditCard] = useState(false);
   const [isHidden, setIsHidden] = useState(false);
+  const [isBalanceMasked, setIsBalanceMasked] = useState(false);
   const [selectedColor, setSelectedColor] = useState("from-emerald-500 to-teal-600");
   const [selectedIcon, setSelectedIcon] = useState("Wallet");
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -115,7 +120,7 @@ export default function Dashboard() {
         .from("transactions")
         .select(`
           *,
-          wallets (name),
+          wallets!transactions_wallet_id_fkey (name),
           categories (name)
         `)
         .order("created_at", { ascending: false })
@@ -157,6 +162,7 @@ export default function Dashboard() {
 
     } catch (err) {
       console.error("Error loading dashboard data:", err);
+      toast.error("Failed to load dashboard data.");
     } finally {
       setLoading(false);
     }
@@ -257,12 +263,14 @@ export default function Dashboard() {
       setStartingBalance("");
       setIsCreditCard(false);
       setIsHidden(false);
+      setIsBalanceMasked(false);
       setSelectedColor("from-emerald-500 to-teal-600");
       setSelectedIcon("Wallet");
       fetchDashboardData();
+      toast.success("Wallet created successfully!");
     } catch (error: any) {
       console.error("Error adding wallet:", error);
-      alert(error.message || "Failed to add wallet");
+      toast.error(error.message || "Failed to add wallet");
     } finally {
       setSubmitting(false);
     }
@@ -297,6 +305,7 @@ export default function Dashboard() {
           name: walletName.trim(),
           is_credit_card: isCreditCard,
           is_hidden: isHidden,
+          is_balance_masked: isBalanceMasked,
           color: selectedColor,
           icon: selectedIcon
         })
@@ -308,12 +317,14 @@ export default function Dashboard() {
       setWalletName("");
       setIsCreditCard(false);
       setIsHidden(false);
+      setIsBalanceMasked(false);
       setSelectedColor("from-emerald-500 to-teal-600");
       setSelectedIcon("Wallet");
       fetchDashboardData();
+      toast.success("Wallet updated successfully!");
     } catch (error: any) {
       console.error("Error updating wallet:", error);
-      alert(error.message || "Failed to update wallet");
+      toast.error(error.message || "Failed to update wallet");
     } finally {
       setSubmitting(false);
     }
@@ -527,15 +538,20 @@ export default function Dashboard() {
                         <span className="text-[10px] font-bold text-white/95 tracking-wide bg-white/10 px-2 py-0.5 rounded-full backdrop-blur-md flex items-center gap-1">
                           {wallet.name}
                           {wallet.is_hidden && <EyeOff className="h-2.5 w-2.5 text-white/80" />}
+                          {wallet.is_credit_card && !wallet.is_hidden && <CreditCard className="h-2.5 w-2.5 text-white/70" />}
                         </span>
                         <WalletIconComponent className="h-4 w-4 text-white/80" />
                       </div>
                       
                       <div className="mt-auto">
                         <span className="text-[9px] text-white/60 block uppercase font-medium">Balance</span>
-                        <span className="text-base font-extrabold text-white leading-none font-heading block mt-0.5">
-                          {formatCurrency(Number(wallet.balance))}
-                        </span>
+                        {(wallet.is_hidden || wallet.is_balance_masked) ? (
+                          <span className="text-base font-extrabold text-white/50 leading-none font-heading block mt-0.5 tracking-[0.2em]">••••••</span>
+                        ) : (
+                          <span className="text-base font-extrabold text-white leading-none font-heading block mt-0.5">
+                            {formatCurrency(Number(wallet.balance))}
+                          </span>
+                        )}
                       </div>
                     </div>
                   );
@@ -739,12 +755,10 @@ export default function Dashboard() {
               {!isCreditCard && (
                 <div className="space-y-1">
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Starting Balance (VND)</label>
-                  <input
-                    type="number"
+                  <MoneyInput
                     value={startingBalance}
-                    onChange={(e) => setStartingBalance(e.target.value)}
-                    placeholder="e.g. 1000000"
-                    className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                    onChange={(raw) => setStartingBalance(raw)}
+                    placeholder="e.g. 1.000.000"
                   />
                   {errors.balance && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.balance}</span>}
                 </div>
@@ -877,6 +891,28 @@ export default function Dashboard() {
                     </label>
                   </div>
 
+                  {/* Mask Balance Toggle */}
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-card border border-border">
+                    <label className="flex items-center gap-3 cursor-pointer w-full">
+                      <div className="relative">
+                        <input
+                          type="checkbox"
+                          className="sr-only peer"
+                          checked={isBalanceMasked}
+                          onChange={(e) => setIsBalanceMasked(e.target.checked)}
+                        />
+                        <div className="w-8 h-4.5 rounded-full border border-border bg-muted peer-checked:bg-emerald-500 peer-checked:border-emerald-500 transition-all" />
+                        <div className="absolute top-0.5 left-0.5 w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-transform peer-checked:translate-x-3.5" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-bold flex items-center gap-1">
+                          <EyeOff className="h-3 w-3" /> Mask Balance
+                        </span>
+                        <span className="text-[7px] text-muted-foreground">Hide balance amount with ••••••</span>
+                      </div>
+                    </label>
+                  </div>
+
                   <div className="space-y-1">
                     <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Name</label>
                     <input
@@ -990,6 +1026,7 @@ export default function Dashboard() {
                           setWalletName(wallet.name);
                           setIsCreditCard(wallet.is_credit_card || false);
                           setIsHidden(wallet.is_hidden || false);
+                          setIsBalanceMasked(wallet.is_balance_masked || false);
                           setSelectedColor(wallet.color || "from-emerald-500 to-teal-600");
                           setSelectedIcon(wallet.icon || "Wallet");
                           setErrors({});

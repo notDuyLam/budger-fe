@@ -22,7 +22,9 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/shared/AuthProvider";
 import Portal from "@/components/shared/Portal";
 import { Select } from "@/components/ui/select";
+import { MoneyInput } from "@/components/ui/money-input";
 import { z } from "zod";
+import { toast } from "sonner";
 
 interface DebtItem {
   id: string;
@@ -96,7 +98,7 @@ export default function DebtsPage() {
         .from("transactions")
         .select(`
           *,
-          wallets (name)
+          wallets!transactions_wallet_id_fkey (name)
         `)
         .in("type", ["DEBT_LENT", "DEBT_BORROWED", "DEBT_REPAYMENT"])
         .order("created_at", { ascending: false });
@@ -218,7 +220,7 @@ export default function DebtsPage() {
     const partnerSchema = z.string().min(1, "Contact Name is required").max(30, "Contact Name must be under 30 characters");
     const check = partnerSchema.safeParse(trimmedName);
     if (!check.success) {
-      alert(check.error.issues[0].message);
+      toast.error(check.error.issues[0].message);
       return;
     }
 
@@ -232,7 +234,7 @@ export default function DebtsPage() {
 
       if (checkErr) throw checkErr;
       if (existing && existing.length > 0) {
-        alert("A contact with this name already exists.");
+        toast.error("A contact with this name already exists.");
         setSubmitting(false);
         return;
       }
@@ -248,9 +250,10 @@ export default function DebtsPage() {
       setNewPartnerName("");
       setIsAddPartnerOpen(false);
       fetchDebtData();
+      toast.success("Contact added successfully!");
     } catch (err) {
       console.error("Error adding debt partner:", err);
-      alert("Failed to add contact: " + (err as any).message);
+      toast.error("Failed to add contact: " + (err as any).message);
     } finally {
       setSubmitting(false);
     }

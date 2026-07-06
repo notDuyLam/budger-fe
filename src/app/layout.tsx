@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Plus_Jakarta_Sans, Lexend } from "next/font/google";
 import "./globals.css";
 import AuthProvider from "@/components/shared/AuthProvider";
+import { Toaster } from "sonner";
 
 const plusJakartaSans = Plus_Jakarta_Sans({
   variable: "--font-inter",
@@ -48,6 +49,19 @@ export default function RootLayout({
         <AuthProvider>
           {children}
         </AuthProvider>
+        <Toaster
+          position="top-right"
+          richColors
+          closeButton
+          toastOptions={{
+            style: {
+              fontFamily: "var(--font-inter)",
+              fontSize: "12px",
+              borderRadius: "14px",
+            },
+            duration: 4000,
+          }}
+        />
       </body>
     </html>
   );

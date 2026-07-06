@@ -75,3 +75,34 @@
 - **Thiết lập CI/CD:** * Đẩy mã nguồn lên GitHub.
     - Import project vào Vercel, cấu hình lại toàn bộ Environment Variables trên Vercel Dashboard.
     - Cấu hình URL Redirect cho Supabase Auth để luồng đăng nhập hoạt động chính xác trên domain thật.
+
+---
+
+### Giai đoạn 7: Sửa Lỗi & Tối Ư u Test Phase 2 (Bug Fixes & Changes) - [Ang thực hiện]
+
+*Mục tiêu: Giải quyết toàn bộ lỗi và các yêu cầu thay đổi sau kết quả kiểm thử lần 2.*
+
+#### 7.1. Critical Bug Fixes
+- [ ] **Bug 1.1:** Sửa query `transactions` trong Dashboard dùng FK alias rõ ràng (`.select('*, wallets!transactions_wallet_id_fkey(*)')`) để khắp phục lỗi `PGRST201`.
+- [ ] **Bug 2.1:** Sửa lỗi reset state về Dashboard khi chuyển tab trình duyệt (kiểm tra `visibilitychange` listener và re-fetch logic trong `AuthProvider`).
+- [ ] **Bug 3.1:** Sửa lỗi chữ cùng màu nền trong bộ lọc Analytics (Select component).
+- [ ] **Bug 3.2:** Thay thế toàn bộ `console.error` rộ + `alert` bằng **Toast Notification** chuẩn cho luồng AI và Debt Ledger.
+
+#### 7.2. Wallet Business Logic
+- [ ] **Logic 1.1:** Đảm bảo khóa số dư âm chỉ áp dụng cho ví thường (không phải Credit Card) - đã có sẵn logic, kiểm tra lại.
+- [ ] **Logic 1.2:** Thêm trường `is_balance_masked` vào DB và giao diện chi tiết ví (icon mắt để toggle ẩn/hiện số dư).
+
+#### 7.3. Pagination & Filters Enhancement
+- [ ] **Tính năng 2.1:** Kiểm tra phân trang và bộ lọc đầy đủ (Wallet, Type, Category, Partner, Date) trong Transactions History - đã có sẵn, review lại.
+- [ ] **Tính năng 2.2:** Click vào ví Dashboard ⇒ redirect sang Transactions với filter wallet đã áp sẵn - đã có sẵn, kiểm tra lại.
+
+#### 7.4. AI Enhancements
+- [ ] **AI 3.1:** Thêm `TRANSFER` type vào AI schema và prompt (điền thêm `to_wallet` field).
+- [ ] **AI 3.2:** Cải thiện UI lịch sử chat: Nhóm theo **Today / This Week / This Month**, chỉ tải thêm khi user yêu cầu.
+- [ ] **AI 3.3:** Đồng bộ `due_date` trên form thủ công (field đã có, đảm bảo hiển thị đúng).
+- [ ] **Tính năng 3.4:** Kiểm tra tab Quản lý Category (CRUD + AI suggest icon) đã đủ chức năng chưa.
+
+#### 7.5. Analytics & Account Optimization
+- [ ] **Tối ưu 4.1:** Pie Chart đã có toggle Income/Expense - kiểm tra lại.
+- [ ] **Tối ưu 4.2:** Tạo **MoneyInputFormatter** reusable component - format số tiền với dấu chấm nghìn.
+- [ ] **Tối ưu 4.3:** Loại bỏ tab Account riêng; nén thông tin tài khoản vào Dropdown trên Header.

@@ -36,13 +36,16 @@ import {
   Gamepad2,
   Gift,
   HelpCircle,
-  CreditCard
+  CreditCard,
+  ArrowLeftRight
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/shared/AuthProvider";
 import Portal from "@/components/shared/Portal";
 import { Select } from "@/components/ui/select";
+import { MoneyInput } from "@/components/ui/money-input";
 import { z } from "zod";
+import { toast } from "sonner";
 
 interface Wallet {
   id: string;
@@ -50,6 +53,7 @@ interface Wallet {
   balance: number;
   is_hidden?: boolean;
   is_credit_card?: boolean;
+  is_balance_masked?: boolean;
 }
 
 interface Category {
@@ -90,6 +94,7 @@ interface Message {
     type: string;
     amount: number;
     wallet: string;
+    to_wallet?: string | null;
     category?: string | null;
     description: string;
     note?: string;
@@ -188,8 +193,9 @@ function TransactionsContent() {
   // --- PAST CHATS HISTORY STATES ---
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyMessages, setHistoryMessages] = useState<Message[]>([]);
-  const [historyPeriod, setHistoryPeriod] = useState<"today" | "week" | "month" | "all">("all");
+  const [historyPeriod, setHistoryPeriod] = useState<"today" | "week" | "month" | "older">("today");
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [showOlderBtn, setShowOlderBtn] = useState(true);
 
   // Load URL Filter Redirects & Initial Data
   const urlWalletId = searchParams.get("walletId");
@@ -726,6 +732,7 @@ function TransactionsContent() {
         type: result.type,
         amount: result.amount,
         wallet: result.wallet,
+        to_wallet: result.to_wallet || undefined,
         category: result.category,
         description: result.description,
         partner: result.partner || undefined,
@@ -826,13 +833,13 @@ function TransactionsContent() {
         // Resolve Category
         const isActualDebt = card.type === "DEBT_LENT" || card.type === "DEBT_BORROWED";
         let cId = null;
-        if (!isActualDebt && card.category) {
+        if (!isActualDebt && card.type !== "TRANSFER" && card.category) {
           cId = categories.find(c => c.name.toLowerCase() === card.category!.toLowerCase())?.id || categories[0]?.id;
         }
 
-        // Standard Wallet Negative Balance Prevention
+        // Standard Wallet Negative Balance Prevention (skip for credit card and TRANSFER destination)
         const targetWallet = wallets.find(w => w.id === wId);
-        if (targetWallet && !targetWallet.is_credit_card) {
+        if (targetWallet && !targetWallet.is_credit_card && card.type !== "TRANSFER") {
           let isRepaymentLent = false;
           if (card.type === "DEBT_REPAYMENT" && pId) {
             const pendingDebt = transactions.find(t => 
@@ -853,8 +860,21 @@ function TransactionsContent() {
           }
 
           if (targetWallet.balance + delta < 0) {
-            alert(`Save blocked! Standard wallet balance cannot drop below 0. Current balance: ${targetWallet.balance.toLocaleString()} VND.`);
+            toast.error(`Cannot save! Standard wallet "${targetWallet.name}" balance cannot drop below 0. Current: ${targetWallet.balance.toLocaleString()} VND.`);
             return;
+          }
+        }
+
+        // For TRANSFER: also check source wallet balance
+        let toWalletId: string | null = null;
+        if (card.type === "TRANSFER" && card.to_wallet) {
+          toWalletId = wallets.find(w => w.name.toLowerCase() === card.to_wallet!.toLowerCase())?.id || null;
+          // Check source wallet has enough
+          if (targetWallet && !targetWallet.is_credit_card) {
+            if (targetWallet.balance - card.amount < 0) {
+              toast.error(`Cannot transfer! Source wallet "${targetWallet.name}" has insufficient balance. Current: ${targetWallet.balance.toLocaleString()} VND.`);
+              return;
+            }
           }
         }
 
@@ -863,6 +883,7 @@ function TransactionsContent() {
         const { data: newTx, error: txErr } = await supabase.from("transactions").insert({
           user_id: user.id,
           wallet_id: wId,
+          to_wallet_id: toWalletId || null,
           category_id: cId || null,
           debt_partner_id: pId || null,
           amount: card.amount,
@@ -913,7 +934,9 @@ function TransactionsContent() {
           prev.map((msg) => {
             if (msg.id === msgId && msg.confirmationCard) {
               let successText = `✅ Saved transaction **${card.description}** successfully!\nAmount: ${formatCurrency(card.amount)} in **${card.wallet}** wallet.`;
-              if (isDebt && card.partner) {
+              if (card.type === "TRANSFER" && card.to_wallet) {
+                successText = `✅ Transfer recorded successfully!\nAmount: ${formatCurrency(card.amount)} from **${card.wallet}** → **${card.to_wallet}**.`;
+              } else if (isDebt && card.partner) {
                 const actionLabel = card.type === "DEBT_LENT" ? "lent to" : card.type === "DEBT_BORROWED" ? "borrowed from" : "repaid with";
                 successText = `✅ Recorded debt action successfully!\nAmount: ${formatCurrency(card.amount)} in **${card.wallet}** wallet ${card.type === "DEBT_REPAYMENT" ? "repayment for" : actionLabel} **${card.partner}** (Status: ${status}).`;
               } else if (card.category) {
@@ -934,9 +957,11 @@ function TransactionsContent() {
             return msg;
           })
         );
+
+        toast.success(`Transaction "${card.description}" saved!`);
       } catch (err: any) {
         console.error("Error inside saveAICard:", err);
-        alert("Failed to save transaction: " + err.message);
+        toast.error("Failed to save transaction: " + (err.message || "Unknown error"));
       }
     };
 
@@ -955,27 +980,30 @@ function TransactionsContent() {
     }
   };
 
-  // Fetch AI Chat messages history on-demand
-  const fetchChatHistory = async () => {
+  // Fetch AI Chat messages history on-demand (grouped by period)
+  const fetchChatHistory = async (period?: "today" | "week" | "month" | "older") => {
     if (!user) return;
+    const targetPeriod = period || "today";
     setHistoryLoading(true);
     setHistoryOpen(true);
+    setHistoryPeriod(targetPeriod);
     try {
       let query = supabase.from("chat_messages").select("*").order("created_at", { ascending: true });
       
       const now = new Date();
-      if (historyPeriod === "today") {
-        const todayStart = new Date(now.setHours(0,0,0,0)).toISOString();
-        query = query.gte("created_at", todayStart);
-      } else if (historyPeriod === "week") {
-        const weekStart = new Date(now.setDate(now.getDate() - 7)).toISOString();
-        query = query.gte("created_at", weekStart);
-      } else if (historyPeriod === "month") {
-        const monthStart = new Date(now.setMonth(now.getMonth() - 1)).toISOString();
-        query = query.gte("created_at", monthStart);
+      if (targetPeriod === "today") {
+        const todayStart = new Date(now); todayStart.setHours(0,0,0,0);
+        query = query.gte("created_at", todayStart.toISOString());
+      } else if (targetPeriod === "week") {
+        const weekStart = new Date(now); weekStart.setDate(weekStart.getDate() - 7);
+        query = query.gte("created_at", weekStart.toISOString());
+      } else if (targetPeriod === "month") {
+        const monthStart = new Date(now); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+        query = query.gte("created_at", monthStart.toISOString());
       }
+      // "older" = no date filter, load everything
 
-      const { data } = await query;
+      const { data } = await query.limit(200);
 
       const formatted = (data || []).map((msg: any) => ({
         id: msg.id,
@@ -986,6 +1014,7 @@ function TransactionsContent() {
           type: msg.confirmation_card.type,
           amount: Number(msg.confirmation_card.amount),
           wallet: msg.confirmation_card.wallet,
+          to_wallet: msg.confirmation_card.to_wallet,
           category: msg.confirmation_card.category,
           description: msg.confirmation_card.description,
           partner: msg.confirmation_card.partner,
@@ -998,16 +1027,11 @@ function TransactionsContent() {
       setHistoryMessages(formatted);
     } catch (err) {
       console.error("Error loading chat history:", err);
+      toast.error("Failed to load chat history.");
     } finally {
       setHistoryLoading(false);
     }
   };
-
-  useEffect(() => {
-    if (historyOpen) {
-      fetchChatHistory();
-    }
-  }, [historyPeriod]);
 
   // Markdown Render
   const renderMessageText = (text: string) => {
@@ -1451,7 +1475,7 @@ function TransactionsContent() {
                     <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide">AI Assistant Console</span>
                   </div>
                   <button 
-                    onClick={fetchChatHistory}
+                    onClick={() => fetchChatHistory("today")}
                     className="text-[10px] text-emerald-500 font-bold hover:underline flex items-center gap-1 cursor-pointer"
                   >
                     🕒 Review past chats
@@ -1488,10 +1512,13 @@ function TransactionsContent() {
                               <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
                                 msg.confirmationCard.type === "EXPENSE" || msg.confirmationCard.type === "DEBT_LENT"
                                   ? "bg-rose-500/20 text-rose-450" 
+                                  : msg.confirmationCard.type === "TRANSFER"
+                                  ? "bg-blue-500/20 text-blue-400"
                                   : "bg-emerald-500/20 text-emerald-450"
                               }`}>
                                 {msg.confirmationCard.type === "EXPENSE" && "Expense"}
                                 {msg.confirmationCard.type === "INCOME" && "Income"}
+                                {msg.confirmationCard.type === "TRANSFER" && "Transfer"}
                                 {msg.confirmationCard.type === "DEBT_LENT" && "Lent (Loan)"}
                                 {msg.confirmationCard.type === "DEBT_BORROWED" && "Borrowed (Debt)"}
                                 {msg.confirmationCard.type === "DEBT_REPAYMENT" && "Repayment"}
@@ -1508,9 +1535,18 @@ function TransactionsContent() {
                                 <span className="font-bold text-emerald-400 font-heading">{formatCurrency(msg.confirmationCard.amount)}</span>
                               </div>
                               <div className="flex justify-between">
-                                <span className="text-slate-400">Wallet:</span>
+                                <span className="text-slate-400">{msg.confirmationCard.type === "TRANSFER" ? "From Wallet:" : "Wallet:"}</span>
                                 <span className="font-medium text-emerald-400">{msg.confirmationCard.wallet}</span>
                               </div>
+                              {msg.confirmationCard.type === "TRANSFER" && msg.confirmationCard.to_wallet && (
+                                <div className="flex justify-between">
+                                  <span className="text-slate-400">To Wallet:</span>
+                                  <span className="font-medium text-blue-400 flex items-center gap-1">
+                                    <ArrowLeftRight className="h-3 w-3" />
+                                    {msg.confirmationCard.to_wallet}
+                                  </span>
+                                </div>
+                              )}
                               {msg.confirmationCard.partner && (
                                 <div className="flex justify-between">
                                   <span className="text-slate-400">Partner:</span>
@@ -1650,13 +1686,11 @@ function TransactionsContent() {
                 {/* Amount Input */}
                 <div className="space-y-1">
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Amount (VND)</label>
-                  <input
-                    type="number"
-                    required
+                  <MoneyInput
                     value={formAmount}
-                    onChange={(e) => setFormAmount(e.target.value)}
-                    placeholder="e.g. 50000"
-                    className="w-full bg-background border border-border rounded-xl py-2.5 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                    onChange={(raw) => setFormAmount(raw)}
+                    placeholder="e.g. 1.000.000"
+                    required
                   />
                   {errors.amount && <span className="text-[10px] text-rose-500 block mt-0.5 leading-normal">{errors.amount}</span>}
                 </div>
@@ -1686,7 +1720,7 @@ function TransactionsContent() {
                   onValueChange={(val) => setFormWalletId(val)}
                   options={wallets.filter(w => !w.is_hidden).map(w => ({
                     value: w.id,
-                    label: `${w.name} (${w.balance.toLocaleString()} VND)`
+                    label: w.is_balance_masked ? `${w.name} (•••••• VND)` : `${w.name} (${w.balance.toLocaleString()} VND)`
                   }))}
                 />
                 {errors.walletId && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.walletId}</span>}
@@ -1701,7 +1735,7 @@ function TransactionsContent() {
                     onValueChange={(val) => setFormToWalletId(val)}
                     options={wallets.filter(w => !w.is_hidden).map(w => ({
                       value: w.id,
-                      label: `${w.name} (${w.balance.toLocaleString()} VND)`
+                      label: w.is_balance_masked ? `${w.name} (•••••• VND)` : `${w.name} (${w.balance.toLocaleString()} VND)`
                     }))}
                   />
                   {errors.toWalletId && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.toWalletId}</span>}
@@ -2091,20 +2125,19 @@ function TransactionsContent() {
                 </button>
               </div>
 
-              {/* Period filters */}
-              <div className="flex gap-2">
+              {/* Period filter tabs */}
+              <div className="flex gap-2 flex-wrap">
                 {[
-                  { key: "all", label: "All time" },
-                  { key: "today", label: "Today" },
-                  { key: "week", label: "This Week" },
-                  { key: "month", label: "This Month" }
+                  { key: "today" as const, label: "Today" },
+                  { key: "week" as const, label: "This Week" },
+                  { key: "month" as const, label: "This Month" },
                 ].map((item) => (
                   <button
                     key={item.key}
-                    onClick={() => setHistoryPeriod(item.key as any)}
+                    onClick={() => fetchChatHistory(item.key)}
                     className={`px-3 py-1.5 rounded-lg border text-[10px] font-bold transition-all cursor-pointer ${
                       historyPeriod === item.key 
-                        ? "bg-emerald-500/10 border-emerald-500/35 text-emerald-555" 
+                        ? "bg-emerald-500/10 border-emerald-500/35 text-emerald-500" 
                         : "bg-background border-border text-muted-foreground hover:text-foreground"
                     }`}
                   >
@@ -2157,7 +2190,10 @@ function TransactionsContent() {
                             <div className="grid grid-cols-2 gap-1.5 text-[10px]">
                               <span>Description: {msg.confirmationCard.description}</span>
                               <span>Amount: {formatCurrency(msg.confirmationCard.amount)}</span>
-                              <span>Wallet: {msg.confirmationCard.wallet}</span>
+                              <span>{msg.confirmationCard.type === "TRANSFER" ? "From:" : "Wallet:"} {msg.confirmationCard.wallet}</span>
+                              {msg.confirmationCard.type === "TRANSFER" && msg.confirmationCard.to_wallet && (
+                                <span className="text-blue-400">To: {msg.confirmationCard.to_wallet}</span>
+                              )}
                               {msg.confirmationCard.category && <span>Category: {msg.confirmationCard.category}</span>}
                               {msg.confirmationCard.partner && <span>Partner: {msg.confirmationCard.partner}</span>}
                               {msg.confirmationCard.due_date && <span>Due: {new Date(msg.confirmationCard.due_date).toLocaleDateString()}</span>}
@@ -2174,7 +2210,14 @@ function TransactionsContent() {
                 )}
               </div>
 
-              <div className="pt-3 border-t border-border flex justify-end">
+              <div className="pt-3 border-t border-border flex items-center justify-between">
+                <button
+                  onClick={() => fetchChatHistory("older")}
+                  className="text-[10px] text-muted-foreground hover:text-foreground font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  {historyLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <ChevronDown className="h-3 w-3" />}
+                  Load older messages
+                </button>
                 <button
                   onClick={() => {
                     setHistoryOpen(false);

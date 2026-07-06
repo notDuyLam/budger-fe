@@ -129,7 +129,7 @@ function buildPrompt(message: string, wallets: string[], categories: Category[],
     : "- None";
 
   return `You are a professional AI Personal Finance Assistant.
-Your task is to analyze the user's financial record statement (income, expenses, or debt transactions like loans/borrowings) and extract the structured data in JSON.
+Your task is to analyze the user's financial record statement (income, expenses, debt transactions, or transfers between wallets) and extract the structured data in JSON.
 
 Here are the user's existing settings:
 [AVAILABLE WALLET ACCOUNTS]
@@ -147,23 +147,25 @@ ${partnerListStr}
 2. Determine transaction 'type':
    - 'EXPENSE': Regular spending (e.g. food, bills, shopping).
    - 'INCOME': Regular earnings (e.g. salary, gifts).
+   - 'TRANSFER': When the user transfers money between their own wallets (e.g., "chuyển 500k từ momo qua thẻ credit", "chuyển tiền từ ví A sang ví B", "transfer 1m from cash to bank"). Extract 'wallet' as the SOURCE wallet and 'to_wallet' as the DESTINATION wallet.
    - 'DEBT_LENT': When the user lends money to someone else or someone owes the user money (e.g., "cho Huy vay 500k", "Huy mượn 500k", "Huy nợ 500k", "Trân nợ 100k", "Hải nợ mình 200k").
    - 'DEBT_BORROWED': When the user borrows money from someone else or the user owes someone money (e.g., "vay anh Nam 10m", "anh Nam cho vay 10m", "nợ anh Nam 10m", "mình nợ anh Nam 10m").
    - 'DEBT_REPAYMENT': When the user repays a debt, pays back someone, or receives repayment from someone who owed them (e.g., "trả nợ anh Nam 500k", "Huy trả nợ 150k", "trả anh Nam 500k tiền nợ"). Ensure it contains active repayment/pay-back actions. Simple owing statements like "[Name] nợ [Amount]" must be classified as DEBT_LENT, and "nợ [Name] [Amount]" must be DEBT_BORROWED.
 3. Map 'wallet' to one of the [AVAILABLE WALLET ACCOUNTS] listed above. It must match exactly.
    - If the user specifies a wallet (e.g., "momo", "vcb", "cash") that matches or is close to one in the list, map to it.
    - If no specific wallet is specified or it is ambiguous, select the most likely wallet, or default to the first wallet: "${wallets[0] || 'Momo'}".
-4. Map 'category' to one of the [AVAILABLE CATEGORIES] listed above. It must match exactly and be of the correct type (EXPENSE or INCOME).
+4. For TRANSFER type, also extract 'to_wallet' as the destination wallet from [AVAILABLE WALLET ACCOUNTS]. It must be different from 'wallet'.
+5. Map 'category' to one of the [AVAILABLE CATEGORIES] listed above. It must match exactly and be of the correct type (EXPENSE or INCOME).
    - E.g., if type is EXPENSE, map to an EXPENSE category. If type is INCOME, map to an INCOME category.
-   - For DEBT_LENT, DEBT_BORROWED, and DEBT_REPAYMENT, 'category' is not required and should be null or omitted.
-5. Extract 'description' as a short, meaningful description of the transaction (e.g. "Highlands Coffee", "Supermarket shopping", "Salary payment", "Bus fare", "Cho Huy vay", "Vay anh Nam", "Trả nợ anh Nam", "Huy trả nợ"). Make sure it is descriptive.
-6. Extract 'partner' (Only for DEBT_LENT, DEBT_BORROWED, or DEBT_REPAYMENT):
+   - For DEBT_LENT, DEBT_BORROWED, DEBT_REPAYMENT, and TRANSFER, 'category' is not required and should be null or omitted.
+6. Extract 'description' as a short, meaningful description of the transaction (e.g. "Highlands Coffee", "Supermarket shopping", "Salary payment", "Bus fare", "Cho Huy vay", "Vay anh Nam", "Trả nợ anh Nam", "Huy trả nợ", "Chuyển tiền Momo → Credit"). Make sure it is descriptive.
+7. Extract 'partner' (Only for DEBT_LENT, DEBT_BORROWED, or DEBT_REPAYMENT):
    - Extract the name of the person (e.g. "Huy", "Nam").
    - If the name matches or is close to a name in [AVAILABLE DEBT PARTNERS], map to it exactly. Otherwise, output the raw capitalized name.
-   - For standard INCOME and EXPENSE transactions, 'partner' must be null.
-7. Extract 'note' ONLY if the user provides additional context (e.g. "lunch with group", "birthday party", "monthly subscription").
+   - For standard INCOME, EXPENSE, and TRANSFER transactions, 'partner' must be null.
+8. Extract 'note' ONLY if the user provides additional context (e.g. "lunch with group", "birthday party", "monthly subscription").
    - **CRITICAL RULE:** If the user statement does not contain any extra details beyond the amount, merchant, wallet or category, you must set 'note' to null or empty string. Do NOT invent a note, do NOT copy description to note.
-8. Extract 'due_date' (Only for DEBT_LENT and DEBT_BORROWED):
+9. Extract 'due_date' (Only for DEBT_LENT and DEBT_BORROWED):
    - Extract any due date, payback deadline or repayment date specified in the user's message (e.g. 'cuối tuần sau', 'tháng sau', 'ngày 15/10').
    - Convert relative or absolute dates to an ISO date string format (YYYY-MM-DD) based on today's local date: ${new Date().toISOString().split("T")[0]}.
    - If no payback deadline or date is specified, set 'due_date' to null.
@@ -189,26 +191,30 @@ function buildGeminiPayload(prompt: string) {
         properties: {
           type: {
             type: "STRING",
-            enum: ["INCOME", "EXPENSE", "DEBT_LENT", "DEBT_BORROWED", "DEBT_REPAYMENT"],
+            enum: ["INCOME", "EXPENSE", "TRANSFER", "DEBT_LENT", "DEBT_BORROWED", "DEBT_REPAYMENT"],
           },
           amount: {
             type: "INTEGER",
           },
           wallet: {
             type: "STRING",
-            description: "The name of the wallet account matched exactly from the available wallets.",
+            description: "The name of the SOURCE wallet account matched exactly from the available wallets.",
+          },
+          to_wallet: {
+            type: "STRING",
+            description: "For TRANSFER type only: the name of the DESTINATION wallet matched exactly from the available wallets. Set to null for all other types.",
           },
           category: {
             type: "STRING",
-            description: "The name of the category matched exactly from the available categories. Set to null for DEBT_LENT, DEBT_BORROWED, and DEBT_REPAYMENT.",
+            description: "The name of the category matched exactly from the available categories. Set to null for DEBT_LENT, DEBT_BORROWED, DEBT_REPAYMENT, and TRANSFER.",
           },
           description: {
             type: "STRING",
-            description: "A brief merchant or activity description (e.g. 'Gasoline', 'Lunch', 'Vay anh Nam', 'Trả nợ anh Nam').",
+            description: "A brief merchant or activity description (e.g. 'Gasoline', 'Lunch', 'Vay anh Nam', 'Trả nợ anh Nam', 'Chuyển tiền Momo → Credit').",
           },
           partner: {
             type: "STRING",
-            description: "The name of the person being lent to, borrowed from, or repayment partner. Set to null for regular INCOME/EXPENSE.",
+            description: "The name of the person being lent to, borrowed from, or repayment partner. Set to null for regular INCOME/EXPENSE/TRANSFER.",
           },
           note: {
             type: "STRING",
@@ -239,7 +245,7 @@ function cleanAndParseJSON(text: string) {
 
 function validateAndNormalize(result: any, wallets: string[], categories: Category[], partners: string[]) {
   // Normalize type
-  const allowedTypes = ["INCOME", "EXPENSE", "DEBT_LENT", "DEBT_BORROWED", "DEBT_REPAYMENT"];
+  const allowedTypes = ["INCOME", "EXPENSE", "TRANSFER", "DEBT_LENT", "DEBT_BORROWED", "DEBT_REPAYMENT"];
   const type = allowedTypes.includes(result.type) ? result.type : "EXPENSE";
 
   // Normalize amount
@@ -257,6 +263,24 @@ function validateAndNormalize(result: any, wallets: string[], categories: Catego
     wallet = matchedWallet;
   } else if (wallets.length > 0) {
     wallet = wallets[0];
+  }
+
+  // Normalize to_wallet: only for TRANSFER
+  let to_wallet: string | null = null;
+  if (type === "TRANSFER") {
+    const rawToWallet = (result.to_wallet || "").trim();
+    if (rawToWallet) {
+      const matchedToWallet = wallets.find(
+        (w) => w.toLowerCase() === rawToWallet.toLowerCase()
+      );
+      to_wallet = matchedToWallet || (wallets.length > 1 ? wallets[1] : wallets[0]);
+    } else if (wallets.length > 1) {
+      to_wallet = wallets[1];
+    }
+    // Ensure source and destination are different
+    if (to_wallet === wallet && wallets.length > 1) {
+      to_wallet = wallets.find(w => w !== wallet) || wallets[0];
+    }
   }
 
   // Normalize category: only map for INCOME and EXPENSE
@@ -327,6 +351,7 @@ function validateAndNormalize(result: any, wallets: string[], categories: Catego
     type,
     amount,
     wallet,
+    to_wallet,
     category,
     description,
     partner,
