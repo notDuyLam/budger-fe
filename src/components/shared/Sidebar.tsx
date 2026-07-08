@@ -96,7 +96,7 @@ export default function Sidebar() {
 
       {/* Footer Info */}
       <div className="pt-4 border-t border-border flex items-center justify-between text-[11px] text-muted-foreground">
-        <span>v0.2.0 (Wireframe)</span>
+        <span>v1.0.0</span>
         <a href="#" className="hover:text-foreground flex items-center gap-1">
           <Info className="h-3 w-3" /> Guides
         </a>

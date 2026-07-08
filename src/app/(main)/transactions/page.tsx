@@ -602,7 +602,7 @@ function TransactionsContent() {
         setDebtPartners(partnersData || []);
       } catch (err: any) {
         console.error("Error saving transaction:", err);
-        alert("Failed to save transaction: " + err.message);
+        customToast.error("Failed to save transaction: " + err.message);
       } finally {
         setSubmitting(false);
       }
@@ -1916,7 +1916,7 @@ function TransactionsContent() {
 
                       if (checkErr) throw checkErr;
                       if (existing && existing.length > 0) {
-                        alert("A contact with this name already exists.");
+                        customToast.error("A contact with this name already exists.");
                         setPartnerConfirmData(null);
                         return;
                       }
@@ -1936,7 +1936,7 @@ function TransactionsContent() {
                       await onConfirmCb(newPartner.id);
                     } catch (err: any) {
                       console.error("Error creating partner in confirmation modal:", err);
-                      alert("Failed to create partner: " + err.message);
+                      customToast.error("Failed to create partner: " + err.message);
                     }
                   }}
                   className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:from-emerald-400 hover:to-teal-500 font-bold transition-all cursor-pointer text-xs text-center"
