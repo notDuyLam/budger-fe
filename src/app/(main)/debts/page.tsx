@@ -24,7 +24,7 @@ import Portal from "@/components/shared/Portal";
 import { Select } from "@/components/ui/select";
 import { MoneyInput } from "@/components/ui/money-input";
 import { z } from "zod";
-import { toast } from "sonner";
+import { customToast } from "@/components/ui/custom-toast";
 
 interface DebtItem {
   id: string;
@@ -57,6 +57,7 @@ export default function DebtsPage() {
   const [loading, setLoading] = useState(true);
   const [isAddPartnerOpen, setIsAddPartnerOpen] = useState(false);
   const [newPartnerName, setNewPartnerName] = useState("");
+  const [partnerError, setPartnerError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   // --- LEDGER FILTER STATES (INSIDE MODAL) ---
@@ -215,12 +216,13 @@ export default function DebtsPage() {
   const handleAddPartner = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedName = newPartnerName.trim();
-    if (!trimmedName || !user || submitting) return;
+    setPartnerError("");
+    if (!user || submitting) return;
 
     const partnerSchema = z.string().min(1, "Contact Name is required").max(30, "Contact Name must be under 30 characters");
     const check = partnerSchema.safeParse(trimmedName);
     if (!check.success) {
-      toast.error(check.error.issues[0].message);
+      setPartnerError(check.error.issues[0].message);
       return;
     }
 
@@ -234,7 +236,7 @@ export default function DebtsPage() {
 
       if (checkErr) throw checkErr;
       if (existing && existing.length > 0) {
-        toast.error("A contact with this name already exists.");
+        setPartnerError("A contact with this name already exists.");
         setSubmitting(false);
         return;
       }
@@ -250,10 +252,10 @@ export default function DebtsPage() {
       setNewPartnerName("");
       setIsAddPartnerOpen(false);
       fetchDebtData();
-      toast.success("Contact added successfully!");
+      customToast.success("Contact added successfully!");
     } catch (err) {
       console.error("Error adding debt partner:", err);
-      toast.error("Failed to add contact: " + (err as any).message);
+      customToast.error("Failed to add contact: " + (err as any).message);
     } finally {
       setSubmitting(false);
     }
@@ -649,6 +651,7 @@ export default function DebtsPage() {
                   onClick={() => {
                     setIsAddPartnerOpen(false);
                     setNewPartnerName("");
+                    setPartnerError("");
                   }}
                   className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
                 >
@@ -660,12 +663,15 @@ export default function DebtsPage() {
                 <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Contact Name</label>
                 <input
                   type="text"
-                  required
                   value={newPartnerName}
-                  onChange={(e) => setNewPartnerName(e.target.value)}
+                  onChange={(e) => {
+                    setNewPartnerName(e.target.value);
+                    setPartnerError("");
+                  }}
                   placeholder="e.g. Anh Huy, Nam, Vy"
                   className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                 />
+                {partnerError && <span className="text-[10px] text-rose-500 block mt-0.5">{partnerError}</span>}
               </div>
 
               <div className="flex gap-2 pt-3 border-t border-border">
@@ -674,6 +680,7 @@ export default function DebtsPage() {
                   onClick={() => {
                     setIsAddPartnerOpen(false);
                     setNewPartnerName("");
+                    setPartnerError("");
                   }}
                   className="flex-1 py-2 rounded-xl bg-accent border border-border text-muted-foreground hover:text-foreground font-semibold transition-colors cursor-pointer text-xs text-center"
                 >

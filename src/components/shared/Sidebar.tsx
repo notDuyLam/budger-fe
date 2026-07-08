@@ -10,7 +10,8 @@ import {
   PieChart, 
   Info, 
   ChevronRight,
-  Sparkles
+  Sparkles,
+  Tag
 } from "lucide-react";
 
 export default function Sidebar() {
@@ -20,6 +21,7 @@ export default function Sidebar() {
     { name: "Overview Dashboard", href: "/dashboard", icon: Home, desc: "Balances, assets & wallets" },
     { name: "Transactions & AI", href: "/transactions", icon: MessageSquare, desc: "Log expenditures & AI Chat" },
     { name: "Debt Ledger", href: "/debts", icon: Receipt, desc: "Manage loans, debts & paybacks" },
+    { name: "Category Management", href: "/categories", icon: Tag, desc: "Manage income & expense categories" },
     { name: "Analytics & Reports", href: "/analytics", icon: PieChart, desc: "Visual charts & statistics" },
   ];
 

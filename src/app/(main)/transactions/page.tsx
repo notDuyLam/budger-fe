@@ -2,6 +2,9 @@
 
 import React, { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { 
   Search, 
   Sparkles, 
@@ -45,7 +48,7 @@ import Portal from "@/components/shared/Portal";
 import { Select } from "@/components/ui/select";
 import { MoneyInput } from "@/components/ui/money-input";
 import { z } from "zod";
-import { toast } from "sonner";
+import { customToast } from "@/components/ui/custom-toast";
 
 interface Wallet {
   id: string;
@@ -104,6 +107,99 @@ interface Message {
   };
 }
 
+const transactionSchema = z.object({
+  description: z.string().min(1, "Description is required").max(100, "Description must be under 100 characters"),
+  amount: z.string().min(1, "Amount is required").refine(val => {
+    const num = parseFloat(val.replace(/\./g, ''));
+    return !isNaN(num) && num > 0;
+  }, "Amount must be greater than 0"),
+  type: z.string(),
+  walletId: z.string().min(1, "Source Wallet is required"),
+  toWalletId: z.string().optional(),
+  categoryId: z.string().optional(),
+  partnerId: z.string().optional(),
+  newPartnerName: z.string().optional(),
+  dueDate: z.string().optional(),
+  note: z.string().optional()
+}).superRefine((data, ctx) => {
+  const isTransfer = data.type === "TRANSFER";
+  const isDebt = data.type === "DEBT_LENT" || data.type === "DEBT_BORROWED";
+  const isRepayment = data.type === "DEBT_REPAYMENT";
+
+  if (isTransfer) {
+    if (!data.toWalletId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["toWalletId"],
+        message: "Destination Wallet is required"
+      });
+    } else if (data.toWalletId === data.walletId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["toWalletId"],
+        message: "Source and destination wallets must be different"
+      });
+    }
+  }
+
+  if (!isDebt && !isRepayment && !isTransfer && !data.categoryId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["categoryId"],
+      message: "Category is required"
+    });
+  }
+
+  if ((isDebt || isRepayment) && !data.partnerId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["partnerId"],
+      message: "Debt Partner is required"
+    });
+  }
+
+  if ((isDebt || isRepayment) && data.partnerId === "NEW" && (!data.newPartnerName || !data.newPartnerName.trim())) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["newPartnerName"],
+      message: "Partner name is required"
+    });
+  }
+});
+
+const getWeekDateRange = (weekStr: string) => {
+  const [yearStr, weekNumStr] = weekStr.split("-W");
+  const year = parseInt(yearStr);
+  const week = parseInt(weekNumStr);
+  
+  const jan4 = new Date(year, 0, 4);
+  const dayOfWeek = jan4.getDay();
+  const dayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  const firstMonday = new Date(jan4.setDate(jan4.getDate() + dayOffset));
+  
+  const targetMonday = new Date(firstMonday.setDate(firstMonday.getDate() + (week - 1) * 7));
+  targetMonday.setHours(0,0,0,0);
+  
+  const targetSunday = new Date(targetMonday);
+  targetSunday.setDate(targetSunday.getDate() + 6);
+  targetSunday.setHours(23,59,59,999);
+  
+  return { start: targetMonday, end: targetSunday };
+};
+
+const getMonthDateRange = (monthStr: string) => {
+  const [year, month] = monthStr.split("-").map(Number);
+  const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
+  const end = new Date(year, month, 0, 23, 59, 59, 999);
+  return { start, end };
+};
+
+const getYearDateRange = (yearVal: number) => {
+  const start = new Date(yearVal, 0, 1, 0, 0, 0, 0);
+  const end = new Date(yearVal, 11, 31, 23, 59, 59, 999);
+  return { start, end };
+};
+
 export default function TransactionsPage() {
   return (
     <Suspense fallback={
@@ -144,21 +240,9 @@ function TransactionsContent() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
 
-  // --- MANUAL TRANSACTION FORM STATES ---
+  // --- MANUAL TRANSACTION FORM STATES & HOOK-FORM ---
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
-  const [formDescription, setFormDescription] = useState("");
-  const [formAmount, setFormAmount] = useState("");
-  const [formType, setFormType] = useState("EXPENSE");
-  const [formWalletId, setFormWalletId] = useState("");
-  const [formToWalletId, setFormToWalletId] = useState("");
-  const [formCategoryId, setFormCategoryId] = useState("");
-  const [formNote, setFormNote] = useState("");
-  const [formPartnerId, setFormPartnerId] = useState("");
-  const [formNewPartnerName, setFormNewPartnerName] = useState("");
-  const [formDueDate, setFormDueDate] = useState("");
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  
   const [submitting, setSubmitting] = useState(false);
   const [partnerConfirmData, setPartnerConfirmData] = useState<{
     partnerName: string;
@@ -166,16 +250,37 @@ function TransactionsContent() {
     onCancel: () => void;
   } | null>(null);
 
-  // --- CATEGORY MANAGEMENT STATES ---
-  const [isManageCategoriesOpen, setIsManageCategoriesOpen] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState("");
-  const [newCategoryType, setNewCategoryType] = useState<"INCOME" | "EXPENSE">("EXPENSE");
-  const [newCategoryIcon, setNewCategoryIcon] = useState("HelpCircle");
-  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
-  const [suggestingIcon, setSuggestingIcon] = useState(false);
+  const { register, handleSubmit, setValue, watch, trigger, reset, setError, formState: { errors: formErrors } } = useForm({
+    resolver: zodResolver(transactionSchema),
+    defaultValues: {
+      description: "",
+      amount: "",
+      type: "EXPENSE",
+      walletId: "",
+      toWalletId: "",
+      categoryId: "",
+      partnerId: "",
+      newPartnerName: "",
+      dueDate: "",
+      note: ""
+    }
+  });
+
+  const formType = watch("type") || "EXPENSE";
+  const formWalletId = watch("walletId") || "";
+  const formToWalletId = watch("toWalletId") || "";
+  const formCategoryId = watch("categoryId") || "";
+  const formPartnerId = watch("partnerId") || "";
+  const formNewPartnerName = watch("newPartnerName") || "";
+  const formDueDate = watch("dueDate") || "";
+  const formDescription = watch("description") || "";
+  const formAmount = watch("amount") || "";
+  const formNote = watch("note") || "";
 
   const isDebt = formType === "DEBT_LENT" || formType === "DEBT_BORROWED";
   const isRepayment = formType === "DEBT_REPAYMENT";
+
+
 
   // --- AI ASSISTANT STATES ---
   const [messages, setMessages] = useState<Message[]>([
@@ -193,9 +298,31 @@ function TransactionsContent() {
   // --- PAST CHATS HISTORY STATES ---
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyMessages, setHistoryMessages] = useState<Message[]>([]);
-  const [historyPeriod, setHistoryPeriod] = useState<"today" | "week" | "month" | "older">("today");
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [showOlderBtn, setShowOlderBtn] = useState(true);
+  const [historyFilterMode, setHistoryFilterMode] = useState<"day" | "week" | "month" | "year" | "all">("day");
+
+  const getInitialWeekStr = () => {
+    const d = new Date();
+    const dayNum = d.getDay();
+    const diff = d.getDate() - dayNum + (dayNum === 0 ? -6 : 1);
+    const monday = new Date(d.setDate(diff));
+    
+    const target = new Date(monday.valueOf());
+    const dayNumber = (monday.getDay() + 6) % 7;
+    target.setDate(target.getDate() - dayNumber + 3);
+    const firstThursday = target.valueOf();
+    target.setMonth(0, 1);
+    if (target.getDay() !== 4) {
+      target.setMonth(0, 1 + ((4 - target.getDay()) + 7) % 7);
+    }
+    const weekNum = 1 + Math.ceil((firstThursday - target.valueOf()) / 604800000);
+    return `${monday.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+  };
+
+  const [selectedHistoryDay, setSelectedHistoryDay] = useState(new Date().toISOString().split("T")[0]);
+  const [selectedHistoryWeek, setSelectedHistoryWeek] = useState(getInitialWeekStr());
+  const [selectedHistoryMonth, setSelectedHistoryMonth] = useState(new Date().toISOString().substring(0, 7));
+  const [selectedHistoryYear, setSelectedHistoryYear] = useState(new Date().getFullYear());
 
   // Load URL Filter Redirects & Initial Data
   const urlWalletId = searchParams.get("walletId");
@@ -235,9 +362,9 @@ function TransactionsContent() {
       
       const visibleWallets = wl.filter(w => !w.is_hidden);
       if (visibleWallets.length > 0) {
-        setFormWalletId(visibleWallets[0].id);
+        setValue("walletId", visibleWallets[0].id);
         const secondWallet = visibleWallets[1] || visibleWallets[0];
-        setFormToWalletId(secondWallet.id);
+        setValue("toWalletId", secondWallet.id);
       }
 
       // 2. Fetch Categories
@@ -247,7 +374,7 @@ function TransactionsContent() {
         .order("name", { ascending: true });
       setCategories(categoriesData || []);
       if (categoriesData && categoriesData.length > 0) {
-        setFormCategoryId(categoriesData[0].id);
+        setValue("categoryId", categoriesData[0].id);
       }
 
       // 3. Fetch Debt Partners
@@ -315,97 +442,58 @@ function TransactionsContent() {
   // --- MANUAL CRUD HANDLERS ---
   const openCreateForm = () => {
     setEditingTx(null);
-    setFormDescription("");
-    setFormAmount("");
-    setFormType("EXPENSE");
-    
     const visibleWallets = wallets.filter(w => !w.is_hidden);
-    if (visibleWallets.length > 0) {
-      setFormWalletId(visibleWallets[0].id);
-      setFormToWalletId(visibleWallets[1]?.id || visibleWallets[0].id);
-    }
-    
-    // Default to first expense category
-    const expenseCat = categories.find(c => c.type === "EXPENSE");
-    if (expenseCat) setFormCategoryId(expenseCat.id);
-    else if (categories.length > 0) setFormCategoryId(categories[0].id);
+    const firstWalletId = visibleWallets[0]?.id || "";
+    const secondWalletId = visibleWallets[1]?.id || firstWalletId;
+    const firstCatId = categories[0]?.id || "";
 
-    setFormNote("");
-    setFormPartnerId(debtPartners[0]?.id || "");
-    setFormNewPartnerName("");
-    setFormDueDate("");
-    setErrors({});
+    reset({
+      description: "",
+      amount: "",
+      type: "EXPENSE",
+      walletId: firstWalletId,
+      toWalletId: secondWalletId,
+      categoryId: firstCatId,
+      partnerId: debtPartners[0]?.id || "",
+      newPartnerName: "",
+      dueDate: "",
+      note: ""
+    });
     setIsFormOpen(true);
   };
 
   const openEditForm = (tx: Transaction) => {
     setEditingTx(tx);
-    setFormDescription(tx.description);
-    setFormAmount(Math.abs(tx.amount).toString());
-    setFormType(tx.type);
-    setFormWalletId(tx.wallet_id);
-    setFormToWalletId(tx.to_wallet_id || "");
-    setFormCategoryId(tx.category_id || "");
-    setFormNote(tx.note || "");
-    setFormDueDate(tx.due_date ? tx.due_date.split("T")[0] : "");
-    
-    const existingPartnerId = tx.debt_partner_id || "";
-    setFormPartnerId(existingPartnerId);
-    setFormNewPartnerName("");
-    setErrors({});
+    reset({
+      description: tx.description,
+      amount: Math.abs(tx.amount).toString(),
+      type: tx.type,
+      walletId: tx.wallet_id,
+      toWalletId: tx.to_wallet_id || "",
+      categoryId: tx.category_id || "",
+      note: tx.note || "",
+      dueDate: tx.due_date ? tx.due_date.split("T")[0] : "",
+      partnerId: tx.debt_partner_id || "",
+      newPartnerName: ""
+    });
     setIsFormOpen(true);
   };
 
-  const handleSaveForm = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveForm = handleSubmit(async (data) => {
     if (!user) return;
 
-    // --- Zod Validation Schema ---
-    const isDebt = formType === "DEBT_LENT" || formType === "DEBT_BORROWED";
-    const isRepayment = formType === "DEBT_REPAYMENT";
-    const isTransfer = formType === "TRANSFER";
-
-    const transactionSchema = z.object({
-      description: z.string().min(1, "Description is required").max(100, "Description must be under 100 characters"),
-      amount: z.coerce.number().positive("Amount must be greater than 0"),
-      walletId: z.string().min(1, "Source Wallet is required"),
-      toWalletId: isTransfer ? z.string().min(1, "Destination Wallet is required").refine((val) => val !== formWalletId, "Source and destination wallets must be different") : z.string().optional(),
-      categoryId: (!isDebt && !isRepayment && !isTransfer) ? z.string().min(1, "Category is required") : z.string().optional(),
-      partnerId: (isDebt || isRepayment) ? z.string().min(1, "Debt Partner is required") : z.string().optional(),
-      newPartnerName: (isDebt || isRepayment) && formPartnerId === "NEW" ? z.string().min(1, "Partner name is required") : z.string().optional(),
-      dueDate: isDebt ? z.string().optional() : z.string().optional()
-    });
-
-    const check = transactionSchema.safeParse({
-      description: formDescription.trim(),
-      amount: formAmount,
-      walletId: formWalletId,
-      toWalletId: formToWalletId,
-      categoryId: formCategoryId,
-      partnerId: formPartnerId,
-      newPartnerName: formNewPartnerName.trim(),
-      dueDate: formDueDate
-    });
-
-    if (!check.success) {
-      const errMap: Record<string, string> = {};
-      check.error.issues.forEach((issue) => {
-        if (issue.path[0]) errMap[issue.path[0] as string] = issue.message;
-      });
-      setErrors(errMap);
-      return;
-    }
-    setErrors({});
-
-    const amt = parseFloat(formAmount);
+    const isDebt = data.type === "DEBT_LENT" || data.type === "DEBT_BORROWED";
+    const isRepayment = data.type === "DEBT_REPAYMENT";
+    const isTransfer = data.type === "TRANSFER";
+    const amt = parseFloat(data.amount.replace(/\./g, ''));
 
     // --- Standard Wallet Negative Balance Prevention ---
-    const wallet = wallets.find(w => w.id === formWalletId);
+    const wallet = wallets.find(w => w.id === data.walletId);
     if (wallet && !wallet.is_credit_card) {
       let isRepaymentLent = false;
-      if (isRepayment && formPartnerId) {
+      if (isRepayment && data.partnerId) {
         const pendingDebt = transactions.find(t => 
-          t.debt_partner_id === formPartnerId && 
+          t.debt_partner_id === data.partnerId && 
           t.status === "PENDING" && 
           (t.type === "DEBT_LENT" || t.type === "DEBT_BORROWED")
         );
@@ -413,11 +501,11 @@ function TransactionsContent() {
       }
       
       let delta = 0;
-      if (formType === "EXPENSE" || formType === "DEBT_LENT" || formType === "TRANSFER") {
+      if (data.type === "EXPENSE" || data.type === "DEBT_LENT" || data.type === "TRANSFER") {
         delta = -amt;
-      } else if (formType === "INCOME" || formType === "DEBT_BORROWED") {
+      } else if (data.type === "INCOME" || data.type === "DEBT_BORROWED") {
         delta = amt;
-      } else if (formType === "DEBT_REPAYMENT") {
+      } else if (data.type === "DEBT_REPAYMENT") {
         delta = isRepaymentLent ? amt : -amt;
       }
 
@@ -439,7 +527,7 @@ function TransactionsContent() {
       }
 
       if (wallet.balance - oldDelta + delta < 0) {
-        setErrors({ amount: `Transaction blocked! Standard wallet balance cannot drop below 0. Potential balance: ${(wallet.balance - oldDelta + delta).toLocaleString()} VND.` });
+        setError("amount", { message: `Transaction blocked! Standard wallet balance cannot drop below 0. Potential balance: ${(wallet.balance - oldDelta + delta).toLocaleString()} VND.` });
         return;
       }
     }
@@ -450,15 +538,15 @@ function TransactionsContent() {
       try {
         const status = isDebt ? "PENDING" : "COMPLETED";
         const txData = {
-          description: formDescription.trim(),
+          description: data.description.trim(),
           amount: amt,
-          type: formType,
-          wallet_id: formWalletId,
-          to_wallet_id: isTransfer ? formToWalletId : null,
-          category_id: (!isDebt && !isRepayment && !isTransfer) ? (formCategoryId || null) : null,
+          type: data.type,
+          wallet_id: data.walletId,
+          to_wallet_id: isTransfer ? data.toWalletId : null,
+          category_id: (!isDebt && !isRepayment && !isTransfer) ? (data.categoryId || null) : null,
           debt_partner_id: partnerId || null,
-          note: formNote.trim() || null,
-          due_date: (isDebt && formDueDate) ? new Date(formDueDate).toISOString() : null,
+          note: data.note?.trim() || null,
+          due_date: (isDebt && data.dueDate) ? new Date(data.dueDate).toISOString() : null,
           user_id: user.id,
           status: status
         };
@@ -520,13 +608,13 @@ function TransactionsContent() {
       }
     };
 
-    if ((isDebt || isRepayment) && formPartnerId === "NEW") {
-      const matched = debtPartners.find(p => p.name.toLowerCase() === formNewPartnerName.trim().toLowerCase());
+    if ((isDebt || isRepayment) && data.partnerId === "NEW") {
+      const matched = debtPartners.find(p => p.name.toLowerCase() === data.newPartnerName?.trim().toLowerCase());
       if (matched) {
         saveTransactionData(matched.id);
       } else {
         setPartnerConfirmData({
-          partnerName: formNewPartnerName.trim(),
+          partnerName: data.newPartnerName?.trim() || "",
           onConfirm: async (createdPartnerId: string) => {
             await saveTransactionData(createdPartnerId);
             setPartnerConfirmData(null);
@@ -539,146 +627,40 @@ function TransactionsContent() {
       }
     } else {
       try {
-        await saveTransactionData(formPartnerId || null);
+        await saveTransactionData(data.partnerId || null);
       } catch (err) {
         setSubmitting(false);
       }
     }
-  };
+  });
 
   const handleDeleteTx = async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this transaction?")) return;
-    
-    setSubmitting(true);
-    try {
-      const { error } = await supabase
-        .from("transactions")
-        .delete()
-        .eq("id", id);
+    customToast.confirm(
+      "Are you sure you want to delete this transaction?",
+      async () => {
+        setSubmitting(true);
+        try {
+          const { error } = await supabase
+            .from("transactions")
+            .delete()
+            .eq("id", id);
 
-      if (error) throw error;
-      setIsFormOpen(false);
-      fetchTransactions();
-    } catch (err) {
-      console.error("Error deleting transaction:", err);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // --- CATEGORY CRUD HANDLERS WITH ZOD & ICON ---
-  const handleAddCategory = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCategoryName.trim() || !user) return;
-
-    const catSchema = z.string().min(1, "Name is required").max(30, "Name must be under 30 characters");
-    const check = catSchema.safeParse(newCategoryName.trim());
-    if (!check.success) {
-      alert(check.error.issues[0].message);
-      return;
-    }
-
-    try {
-      const { error } = await supabase
-        .from("categories")
-        .insert({
-          user_id: user.id,
-          name: newCategoryName.trim(),
-          type: newCategoryType,
-          icon: newCategoryIcon
-        });
-
-      if (error) throw error;
-
-      setNewCategoryName("");
-      setNewCategoryIcon("HelpCircle");
-      // Refetch
-      const { data: categoriesData } = await supabase
-        .from("categories")
-        .select("*")
-        .order("name", { ascending: true });
-      setCategories(categoriesData || []);
-    } catch (err) {
-      console.error("Error adding category:", err);
-    }
-  };
-
-  const handleUpdateCategory = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingCategory || !newCategoryName.trim()) return;
-
-    try {
-      const { error } = await supabase
-        .from("categories")
-        .update({
-          name: newCategoryName.trim(),
-          type: newCategoryType,
-          icon: newCategoryIcon
-        })
-        .eq("id", editingCategory.id);
-
-      if (error) throw error;
-
-      setEditingCategory(null);
-      setNewCategoryName("");
-      setNewCategoryIcon("HelpCircle");
-      // Refetch
-      const { data: categoriesData } = await supabase
-        .from("categories")
-        .select("*")
-        .order("name", { ascending: true });
-      setCategories(categoriesData || []);
-    } catch (err) {
-      console.error("Error updating category:", err);
-    }
-  };
-
-  const handleDeleteCategory = async (id: string) => {
-    if (!window.confirm("Deleting this category will set associated transactions' categories to Null. Continue?")) return;
-
-    try {
-      const { error } = await supabase
-        .from("categories")
-        .delete()
-        .eq("id", id);
-
-      if (error) throw error;
-
-      const { data: categoriesData } = await supabase
-        .from("categories")
-        .select("*")
-        .order("name", { ascending: true });
-      setCategories(categoriesData || []);
-    } catch (err) {
-      console.error("Error deleting category:", err);
-    }
-  };
-
-  // AI suggest category icon based on name
-  const suggestCategoryIcon = async () => {
-    if (!newCategoryName.trim()) {
-      alert("Please enter a category name first!");
-      return;
-    }
-    setSuggestingIcon(true);
-    try {
-      const res = await fetch("/api/suggest-icon", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ categoryName: newCategoryName.trim() })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.icon) {
-          setNewCategoryIcon(data.icon);
+          if (error) throw error;
+          setIsFormOpen(false);
+          fetchTransactions();
+          customToast.success("Transaction deleted successfully!");
+        } catch (err: any) {
+          console.error("Error deleting transaction:", err);
+          customToast.error("Failed to delete transaction");
+        } finally {
+          setSubmitting(false);
         }
-      }
-    } catch (err) {
-      console.error("Error suggesting icon:", err);
-    } finally {
-      setSuggestingIcon(false);
-    }
+      },
+      { confirmLabel: "Delete", variant: "danger" }
+    );
   };
+
+
 
   // --- CHAT AI PARSING WITH PERSISTED MESSAGES LOGGING ---
   const handleSendMessage = async () => {
@@ -860,7 +842,7 @@ function TransactionsContent() {
           }
 
           if (targetWallet.balance + delta < 0) {
-            toast.error(`Cannot save! Standard wallet "${targetWallet.name}" balance cannot drop below 0. Current: ${targetWallet.balance.toLocaleString()} VND.`);
+            customToast.error(`Cannot save! Standard wallet "${targetWallet.name}" balance cannot drop below 0. Current: ${targetWallet.balance.toLocaleString()} VND.`);
             return;
           }
         }
@@ -872,7 +854,7 @@ function TransactionsContent() {
           // Check source wallet has enough
           if (targetWallet && !targetWallet.is_credit_card) {
             if (targetWallet.balance - card.amount < 0) {
-              toast.error(`Cannot transfer! Source wallet "${targetWallet.name}" has insufficient balance. Current: ${targetWallet.balance.toLocaleString()} VND.`);
+              customToast.error(`Cannot transfer! Source wallet "${targetWallet.name}" has insufficient balance. Current: ${targetWallet.balance.toLocaleString()} VND.`);
               return;
             }
           }
@@ -958,10 +940,10 @@ function TransactionsContent() {
           })
         );
 
-        toast.success(`Transaction "${card.description}" saved!`);
+        customToast.success(`Transaction "${card.description}" saved!`);
       } catch (err: any) {
         console.error("Error inside saveAICard:", err);
-        toast.error("Failed to save transaction: " + (err.message || "Unknown error"));
+        customToast.error("Failed to save transaction: " + (err.message || "Unknown error"));
       }
     };
 
@@ -980,30 +962,39 @@ function TransactionsContent() {
     }
   };
 
-  // Fetch AI Chat messages history on-demand (grouped by period)
-  const fetchChatHistory = async (period?: "today" | "week" | "month" | "older") => {
+  // Fetch AI Chat messages history on-demand
+  const fetchChatHistory = async () => {
     if (!user) return;
-    const targetPeriod = period || "today";
     setHistoryLoading(true);
-    setHistoryOpen(true);
-    setHistoryPeriod(targetPeriod);
     try {
       let query = supabase.from("chat_messages").select("*").order("created_at", { ascending: true });
       
-      const now = new Date();
-      if (targetPeriod === "today") {
-        const todayStart = new Date(now); todayStart.setHours(0,0,0,0);
-        query = query.gte("created_at", todayStart.toISOString());
-      } else if (targetPeriod === "week") {
-        const weekStart = new Date(now); weekStart.setDate(weekStart.getDate() - 7);
-        query = query.gte("created_at", weekStart.toISOString());
-      } else if (targetPeriod === "month") {
-        const monthStart = new Date(now); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
-        query = query.gte("created_at", monthStart.toISOString());
-      }
-      // "older" = no date filter, load everything
+      if (historyFilterMode !== "all") {
+        let start: Date;
+        let end: Date;
 
-      const { data } = await query.limit(200);
+        if (historyFilterMode === "day") {
+          const dateParts = selectedHistoryDay.split("-").map(Number);
+          start = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 0, 0, 0, 0);
+          end = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 23, 59, 59, 999);
+        } else if (historyFilterMode === "week") {
+          const range = getWeekDateRange(selectedHistoryWeek);
+          start = range.start;
+          end = range.end;
+        } else if (historyFilterMode === "month") {
+          const range = getMonthDateRange(selectedHistoryMonth);
+          start = range.start;
+          end = range.end;
+        } else { // "year"
+          const range = getYearDateRange(Number(selectedHistoryYear));
+          start = range.start;
+          end = range.end;
+        }
+
+        query = query.gte("created_at", start.toISOString()).lte("created_at", end.toISOString());
+      }
+
+      const { data } = await query.limit(250);
 
       const formatted = (data || []).map((msg: any) => ({
         id: msg.id,
@@ -1027,11 +1018,17 @@ function TransactionsContent() {
       setHistoryMessages(formatted);
     } catch (err) {
       console.error("Error loading chat history:", err);
-      toast.error("Failed to load chat history.");
+      customToast.error("Failed to load chat history.");
     } finally {
       setHistoryLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (historyOpen) {
+      fetchChatHistory();
+    }
+  }, [historyOpen, historyFilterMode, selectedHistoryDay, selectedHistoryWeek, selectedHistoryMonth, selectedHistoryYear]);
 
   // Markdown Render
   const renderMessageText = (text: string) => {
@@ -1167,7 +1164,7 @@ function TransactionsContent() {
     { value: "All", label: "All Categories" },
     ...categories.map((c) => ({
       value: c.id,
-      label: `${c.name} (${c.type === "EXPENSE" ? "Expense" : "Income"})`,
+      label: c.name,
       icon: getCategoryIconComponent(c.icon)
     }))
   ];
@@ -1204,7 +1201,7 @@ function TransactionsContent() {
       
       {/* 1. TAB CONTROLLER */}
       <div className="pt-3 shrink-0">
-        <div className="flex p-1 bg-card border border-border rounded-2xl max-w-md mx-auto shadow-sm">
+        <div className="flex p-1 bg-card border border-border rounded-2xl max-w-sm mx-auto shadow-sm">
           <button
             onClick={() => setActiveTab("history")}
             className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-semibold rounded-xl transition-all duration-200 cursor-pointer ${
@@ -1214,7 +1211,7 @@ function TransactionsContent() {
             }`}
           >
             <History className="h-4 w-4" />
-            Transaction History
+            History
           </button>
           <button
             onClick={() => setActiveTab("ai")}
@@ -1295,12 +1292,12 @@ function TransactionsContent() {
                     <div>
                       <div className="flex justify-between items-center mb-1">
                         <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category</label>
-                        <button 
-                          onClick={() => setIsManageCategoriesOpen(true)}
+                        <Link 
+                          href="/categories"
                           className="text-[8px] text-emerald-500 hover:underline font-bold"
                         >
                           Manage
-                        </button>
+                        </Link>
                       </div>
                       <Select
                         value={filterCategoryId}
@@ -1319,22 +1316,27 @@ function TransactionsContent() {
                         onValueChange={(val) => {
                           setFilterType(val);
                           setCurrentPage(1);
+                          if (val !== "DEBT_LENT" && val !== "DEBT_BORROWED" && val !== "DEBT_REPAYMENT") {
+                            setFilterPartnerId("All");
+                          }
                         }}
                         options={typeFilterOptions}
                       />
                     </div>
 
-                    <div>
-                      <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">Debt Partner</label>
-                      <Select
-                        value={filterPartnerId}
-                        onValueChange={(val) => {
-                          setFilterPartnerId(val);
-                          setCurrentPage(1);
-                        }}
-                        options={partnerFilterOptions}
-                      />
-                    </div>
+                    {(filterType === "DEBT_LENT" || filterType === "DEBT_BORROWED" || filterType === "DEBT_REPAYMENT") && (
+                      <div>
+                        <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block mb-1">Debt Partner</label>
+                        <Select
+                          value={filterPartnerId}
+                          onValueChange={(val) => {
+                            setFilterPartnerId(val);
+                            setCurrentPage(1);
+                          }}
+                          options={partnerFilterOptions}
+                        />
+                      </div>
+                    )}
 
                     <div className="sm:col-span-2 grid grid-cols-2 gap-2 pt-1.5 border-t border-dashed border-border">
                       <div>
@@ -1464,7 +1466,9 @@ function TransactionsContent() {
               </div>
             )}
 
-            {/* --- TAB 2: AI CHAT --- */}
+
+
+            {/* --- TAB 2: AI ASSISTANT --- */}
             {activeTab === "ai" && (
               <div className="flex flex-col h-full space-y-4 max-w-2xl mx-auto px-2 relative min-h-[450px]">
                 
@@ -1475,7 +1479,7 @@ function TransactionsContent() {
                     <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide">AI Assistant Console</span>
                   </div>
                   <button 
-                    onClick={() => fetchChatHistory("today")}
+                    onClick={() => setHistoryOpen(true)}
                     className="text-[10px] text-emerald-500 font-bold hover:underline flex items-center gap-1 cursor-pointer"
                   >
                     🕒 Review past chats
@@ -1662,15 +1666,15 @@ function TransactionsContent() {
                   <Select
                     value={formType}
                     onValueChange={(val) => {
-                      setFormType(val);
-                      setErrors({});
+                      setValue("type", val);
                       if (val === "DEBT_LENT" || val === "DEBT_BORROWED" || val === "DEBT_REPAYMENT") {
-                        setFormCategoryId("");
+                        setValue("categoryId", "");
                       } else {
-                        setFormPartnerId("");
-                        setFormNewPartnerName("");
-                        setFormDueDate("");
+                        setValue("partnerId", "");
+                        setValue("newPartnerName", "");
+                        setValue("dueDate", "");
                       }
+                      trigger();
                     }}
                     options={[
                       { value: "EXPENSE", label: "Expense" },
@@ -1688,11 +1692,13 @@ function TransactionsContent() {
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Amount (VND)</label>
                   <MoneyInput
                     value={formAmount}
-                    onChange={(raw) => setFormAmount(raw)}
+                    onChange={(raw) => {
+                      setValue("amount", raw);
+                      trigger("amount");
+                    }}
                     placeholder="e.g. 1.000.000"
-                    required
                   />
-                  {errors.amount && <span className="text-[10px] text-rose-500 block mt-0.5 leading-normal">{errors.amount}</span>}
+                  {formErrors.amount && <span className="text-[10px] text-rose-500 block mt-0.5 leading-normal">{formErrors.amount.message}</span>}
                 </div>
               </div>
 
@@ -1701,13 +1707,11 @@ function TransactionsContent() {
                 <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Description / Title</label>
                 <input
                   type="text"
-                  required
-                  value={formDescription}
-                  onChange={(e) => setFormDescription(e.target.value)}
+                  {...register("description")}
                   placeholder="e.g. Starbucks, Salary, Lent to Huy"
                   className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground placeholder-muted-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                 />
-                {errors.description && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.description}</span>}
+                {formErrors.description && <span className="text-[10px] text-rose-500 block mt-0.5">{formErrors.description.message}</span>}
               </div>
 
               {/* Wallet select (From Wallet if TRANSFER) */}
@@ -1717,13 +1721,16 @@ function TransactionsContent() {
                 </label>
                 <Select
                   value={formWalletId}
-                  onValueChange={(val) => setFormWalletId(val)}
+                  onValueChange={(val) => {
+                    setValue("walletId", val);
+                    trigger("walletId");
+                  }}
                   options={wallets.filter(w => !w.is_hidden).map(w => ({
                     value: w.id,
                     label: w.is_balance_masked ? `${w.name} (•••••• VND)` : `${w.name} (${w.balance.toLocaleString()} VND)`
                   }))}
                 />
-                {errors.walletId && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.walletId}</span>}
+                {formErrors.walletId && <span className="text-[10px] text-rose-500 block mt-0.5">{formErrors.walletId.message}</span>}
               </div>
 
               {/* Destination Wallet select (Only for TRANSFER) */}
@@ -1732,13 +1739,16 @@ function TransactionsContent() {
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">To Wallet</label>
                   <Select
                     value={formToWalletId}
-                    onValueChange={(val) => setFormToWalletId(val)}
+                    onValueChange={(val) => {
+                      setValue("toWalletId", val);
+                      trigger("toWalletId");
+                    }}
                     options={wallets.filter(w => !w.is_hidden).map(w => ({
                       value: w.id,
                       label: w.is_balance_masked ? `${w.name} (•••••• VND)` : `${w.name} (${w.balance.toLocaleString()} VND)`
                     }))}
                   />
-                  {errors.toWalletId && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.toWalletId}</span>}
+                  {formErrors.toWalletId && <span className="text-[10px] text-rose-500 block mt-0.5">{formErrors.toWalletId.message}</span>}
                 </div>
               )}
 
@@ -1748,14 +1758,17 @@ function TransactionsContent() {
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category</label>
                   <Select
                     value={formCategoryId}
-                    onValueChange={(val) => setFormCategoryId(val)}
-                    options={categories.filter(c => c.type === formType).map(c => ({
+                    onValueChange={(val) => {
+                      setValue("categoryId", val);
+                      trigger("categoryId");
+                    }}
+                    options={categories.map(c => ({
                       value: c.id,
                       label: c.name,
                       icon: getCategoryIconComponent(c.icon)
                     }))}
                   />
-                  {errors.categoryId && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.categoryId}</span>}
+                  {formErrors.categoryId && <span className="text-[10px] text-rose-500 block mt-0.5">{formErrors.categoryId.message}</span>}
                 </div>
               )}
 
@@ -1765,13 +1778,13 @@ function TransactionsContent() {
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Debt Partner</label>
                   <div className="relative">
                     <select
-                      required
                       value={formPartnerId}
                       onChange={(e) => {
-                        setFormPartnerId(e.target.value);
+                        setValue("partnerId", e.target.value);
                         if (e.target.value !== "NEW") {
-                          setFormNewPartnerName("");
+                          setValue("newPartnerName", "");
                         }
+                        trigger("partnerId");
                       }}
                       className="w-full bg-background border border-border rounded-xl p-2 pr-8 text-xs text-foreground appearance-none focus:outline-none focus:border-emerald-500/40 font-semibold"
                     >
@@ -1783,7 +1796,7 @@ function TransactionsContent() {
                     </select>
                     <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
                   </div>
-                  {errors.partnerId && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.partnerId}</span>}
+                  {formErrors.partnerId && <span className="text-[10px] text-rose-500 block mt-0.5">{formErrors.partnerId.message}</span>}
                 </div>
               )}
 
@@ -1793,13 +1806,11 @@ function TransactionsContent() {
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">New Partner Name</label>
                   <input
                     type="text"
-                    required
-                    value={formNewPartnerName}
-                    onChange={(e) => setFormNewPartnerName(e.target.value)}
+                    {...register("newPartnerName")}
                     placeholder="e.g. Anh Huy"
                     className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                   />
-                  {errors.newPartnerName && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.newPartnerName}</span>}
+                  {formErrors.newPartnerName && <span className="text-[10px] text-rose-500 block mt-0.5">{formErrors.newPartnerName.message}</span>}
                 </div>
               )}
 
@@ -1809,8 +1820,7 @@ function TransactionsContent() {
                   <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Due Date (Optional)</label>
                   <input
                     type="date"
-                    value={formDueDate}
-                    onChange={(e) => setFormDueDate(e.target.value)}
+                    {...register("dueDate")}
                     className="w-full bg-background border border-border rounded-xl p-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                   />
                 </div>
@@ -1820,8 +1830,7 @@ function TransactionsContent() {
               <div className="space-y-1">
                 <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Note / Ghi chú (Optional)</label>
                 <textarea
-                  value={formNote}
-                  onChange={(e) => setFormNote(e.target.value)}
+                  {...register("note")}
                   placeholder="Additional memo..."
                   className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold h-16 resize-none"
                 />
@@ -1855,168 +1864,6 @@ function TransactionsContent() {
                 </button>
               </div>
             </form>
-          </div>
-        </Portal>
-      )}
-
-      {/* --- CATEGORY MANAGEMENT MODAL --- */}
-      {isManageCategoriesOpen && (
-        <Portal>
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-            <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[85%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
-              <div className="flex items-center justify-between pb-3 border-b border-border">
-                <h3 className="text-sm font-bold font-heading">Manage Categories</h3>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsManageCategoriesOpen(false);
-                    setEditingCategory(null);
-                    setNewCategoryName("");
-                    setNewCategoryIcon("HelpCircle");
-                  }}
-                  className="h-8 w-8 rounded-full bg-accent border border-border text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-
-              {/* Form Category Add/Edit */}
-              <form 
-                onSubmit={editingCategory ? handleUpdateCategory : handleAddCategory}
-                className="p-4 bg-background border border-border rounded-2xl grid grid-cols-1 gap-3 text-foreground"
-              >
-                <h4 className="text-xs font-bold border-b border-border pb-1">
-                  {editingCategory ? "Edit Category Details" : "Create New Category"}
-                </h4>
-
-                <div className="space-y-1">
-                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Category Name</label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      required
-                      value={newCategoryName}
-                      onChange={(e) => setNewCategoryName(e.target.value)}
-                      placeholder="e.g. Cosmetics, Books, Rent"
-                      className="flex-1 bg-card border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={suggestCategoryIcon}
-                      disabled={suggestingIcon}
-                      className="px-3 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/20 rounded-xl text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                    >
-                      {suggestingIcon ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                      Suggest Icon
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Type</label>
-                  <Select
-                    value={newCategoryType}
-                    onValueChange={(val) => setNewCategoryType(val as "INCOME" | "EXPENSE")}
-                    options={[
-                      { value: "EXPENSE", label: "Expense (Chi tiêu)" },
-                      { value: "INCOME", label: "Income (Thu nhập)" }
-                    ]}
-                  />
-                </div>
-
-                {/* Icon Grid Choice */}
-                <div className="space-y-1.5">
-                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Select Custom Icon</label>
-                  <div className="grid grid-cols-6 gap-2">
-                    {[
-                      "Coffee", "ShoppingBag", "Home", "Car", "Activity", "BookOpen", "Gamepad2", "DollarSign", "TrendingUp", "Gift", "HelpCircle"
-                    ].map((name) => {
-                      const IconComp = getCategoryIconComponent(name);
-                      const isSelected = newCategoryIcon === name;
-                      return (
-                        <button
-                          key={name}
-                          type="button"
-                          onClick={() => setNewCategoryIcon(name)}
-                          className={`p-2 rounded-lg border flex items-center justify-center cursor-pointer transition-colors ${
-                            isSelected 
-                              ? "border-emerald-500 bg-emerald-500/15 text-emerald-500" 
-                              : "border-border bg-card hover:bg-accent/40 text-muted-foreground"
-                          }`}
-                        >
-                          <IconComp className="h-4 w-4" />
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  className="py-2.5 rounded-xl bg-emerald-500 text-slate-950 hover:bg-emerald-400 font-bold text-xs cursor-pointer flex items-center justify-center mt-1"
-                >
-                  {editingCategory ? "Update Category" : "Create Category"}
-                </button>
-              </form>
-
-              {/* List Categories */}
-              <div className="space-y-2 max-h-52 overflow-y-auto">
-                {categories.map((c) => {
-                  const CatIcon = getCategoryIconComponent(c.icon);
-                  return (
-                    <div 
-                      key={c.id} 
-                      className="flex items-center justify-between p-3 rounded-xl bg-background border border-border"
-                    >
-                      <div className="flex items-center gap-2">
-                        <div className="p-1.5 rounded-lg bg-card text-muted-foreground border border-border">
-                          <CatIcon className="h-3.5 w-3.5" />
-                        </div>
-                        <span className="text-xs font-semibold">{c.name}</span>
-                        <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${
-                          c.type === "EXPENSE" ? "bg-rose-500/10 text-rose-550" : "bg-emerald-500/10 text-emerald-500"
-                        }`}>
-                          {c.type === "EXPENSE" ? "Expense" : "Income"}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => {
-                            setEditingCategory(c);
-                            setNewCategoryName(c.name);
-                            setNewCategoryType(c.type);
-                            setNewCategoryIcon(c.icon || "HelpCircle");
-                          }}
-                          className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                        >
-                          <Edit2 className="h-3 w-3" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteCategory(c.id)}
-                          className="p-1.5 rounded-lg text-rose-550 hover:bg-rose-500/10 transition-colors"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="pt-3 border-t border-border flex justify-end">
-                <button
-                  onClick={() => {
-                    setIsManageCategoriesOpen(false);
-                    setEditingCategory(null);
-                    setNewCategoryName("");
-                    setNewCategoryIcon("HelpCircle");
-                  }}
-                  className="px-4 py-2 rounded-xl bg-accent text-xs font-semibold cursor-pointer"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
           </div>
         </Portal>
       )}
@@ -2125,25 +1972,78 @@ function TransactionsContent() {
                 </button>
               </div>
 
-              {/* Period filter tabs */}
-              <div className="flex gap-2 flex-wrap">
-                {[
-                  { key: "today" as const, label: "Today" },
-                  { key: "week" as const, label: "This Week" },
-                  { key: "month" as const, label: "This Month" },
-                ].map((item) => (
-                  <button
-                    key={item.key}
-                    onClick={() => fetchChatHistory(item.key)}
-                    className={`px-3 py-1.5 rounded-lg border text-[10px] font-bold transition-all cursor-pointer ${
-                      historyPeriod === item.key 
-                        ? "bg-emerald-500/10 border-emerald-500/35 text-emerald-500" 
-                        : "bg-background border-border text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
+              {/* Granular Date Filters */}
+              <div className="flex flex-col gap-2.5 sm:flex-row sm:items-end justify-between p-4 rounded-2xl bg-background border border-border">
+                <div className="space-y-1 min-w-[120px]">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Filter Mode</label>
+                  <Select
+                    value={historyFilterMode}
+                    onValueChange={(val) => setHistoryFilterMode(val as any)}
+                    options={[
+                      { value: "day", label: "Day" },
+                      { value: "week", label: "Week" },
+                      { value: "month", label: "Month" },
+                      { value: "year", label: "Year" },
+                      { value: "all", label: "All Logs" }
+                    ]}
+                  />
+                </div>
+
+                {historyFilterMode === "day" && (
+                  <div className="flex-1 space-y-1">
+                    <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Select Day</label>
+                    <input
+                      type="date"
+                      value={selectedHistoryDay}
+                      onChange={(e) => setSelectedHistoryDay(e.target.value)}
+                      className="w-full bg-card border border-border rounded-xl p-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold h-[38px]"
+                    />
+                  </div>
+                )}
+
+                {historyFilterMode === "week" && (
+                  <div className="flex-1 space-y-1">
+                    <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Select Week</label>
+                    <input
+                      type="week"
+                      value={selectedHistoryWeek}
+                      onChange={(e) => setSelectedHistoryWeek(e.target.value)}
+                      className="w-full bg-card border border-border rounded-xl p-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold h-[38px]"
+                    />
+                  </div>
+                )}
+
+                {historyFilterMode === "month" && (
+                  <div className="flex-1 space-y-1">
+                    <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Select Month</label>
+                    <input
+                      type="month"
+                      value={selectedHistoryMonth}
+                      onChange={(e) => setSelectedHistoryMonth(e.target.value)}
+                      className="w-full bg-card border border-border rounded-xl p-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold h-[38px]"
+                    />
+                  </div>
+                )}
+
+                {historyFilterMode === "year" && (
+                  <div className="flex-1 space-y-1">
+                    <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Select Year</label>
+                    <input
+                      type="number"
+                      min="2000"
+                      max="2099"
+                      value={selectedHistoryYear}
+                      onChange={(e) => setSelectedHistoryYear(Number(e.target.value))}
+                      className="w-full bg-card border border-border rounded-xl p-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold h-[38px]"
+                    />
+                  </div>
+                )}
+
+                {historyFilterMode === "all" && (
+                  <div className="flex-1 text-center py-2 text-xs text-muted-foreground font-semibold">
+                    Displaying all chats logs history (no date boundary filter)
+                  </div>
+                )}
               </div>
 
               {/* Message log items */}
@@ -2210,14 +2110,7 @@ function TransactionsContent() {
                 )}
               </div>
 
-              <div className="pt-3 border-t border-border flex items-center justify-between">
-                <button
-                  onClick={() => fetchChatHistory("older")}
-                  className="text-[10px] text-muted-foreground hover:text-foreground font-semibold flex items-center gap-1 cursor-pointer"
-                >
-                  {historyLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <ChevronDown className="h-3 w-3" />}
-                  Load older messages
-                </button>
+              <div className="pt-3 border-t border-border flex justify-end">
                 <button
                   onClick={() => {
                     setHistoryOpen(false);

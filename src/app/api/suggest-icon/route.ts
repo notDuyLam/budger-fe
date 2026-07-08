@@ -41,10 +41,10 @@ async function suggestIconWithRotation(categoryName: string, apiKeys: string[]) 
 
   const prompt = `Suggest a matching Lucide icon for the following finance transaction category name: "${categoryName}".
 Choose from these exact options ONLY: Coffee, ShoppingBag, Home, Car, Activity, BookOpen, Gamepad2, DollarSign, TrendingUp, Gift, HelpCircle.
-Output only a JSON object containing the icon name.
-Example: Category: "Starbucks Coffee" -> { "icon": "Coffee" }
-Example: Category: "Salary Payment" -> { "icon": "DollarSign" }
-Example: Category: "Gym membership" -> { "icon": "Activity" }`;
+Output only a valid JSON string matching one of the options.
+Example: Category: "Starbucks Coffee" -> "Coffee"
+Example: Category: "Salary Payment" -> "DollarSign"
+Example: Category: "Gym membership" -> "Activity"`;
 
   const payload = {
     contents: [
@@ -59,14 +59,8 @@ Example: Category: "Gym membership" -> { "icon": "Activity" }`;
     generationConfig: {
       responseMimeType: "application/json",
       responseSchema: {
-        type: "OBJECT",
-        properties: {
-          icon: {
-            type: "STRING",
-            enum: ["Coffee", "ShoppingBag", "Home", "Car", "Activity", "BookOpen", "Gamepad2", "DollarSign", "TrendingUp", "Gift", "HelpCircle"],
-          },
-        },
-        required: ["icon"],
+        type: "STRING",
+        enum: ["Coffee", "ShoppingBag", "Home", "Car", "Activity", "BookOpen", "Gamepad2", "DollarSign", "TrendingUp", "Gift", "HelpCircle"],
       },
     },
   };
@@ -101,10 +95,10 @@ Example: Category: "Gym membership" -> { "icon": "Activity" }`;
       }
 
       const cleaned = rawText.trim();
-      const parsed = JSON.parse(cleaned);
+      const parsedString = JSON.parse(cleaned);
 
       currentKeyIndex = activeIndex;
-      return parsed;
+      return { icon: parsedString };
 
     } catch (err: any) {
       console.warn(`[Suggest Icon Rotation] Key index ${activeIndex} failed. Error:`, err.message || err);

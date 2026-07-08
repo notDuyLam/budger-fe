@@ -3,12 +3,12 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { 
-  Plus, 
-  ArrowUpRight, 
-  ArrowDownLeft, 
-  Sparkles, 
-  Wallet as WalletIcon, 
+import {
+  Plus,
+  ArrowUpRight,
+  ArrowDownLeft,
+  Sparkles,
+  Wallet as WalletIcon,
   CreditCard,
   Smartphone,
   PiggyBank,
@@ -29,8 +29,9 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/components/shared/AuthProvider";
 import Portal from "@/components/shared/Portal";
 import { MoneyInput } from "@/components/ui/money-input";
+import { Select } from "@/components/ui/select";
 import { z } from "zod";
-import { toast } from "sonner";
+import { customToast } from "@/components/ui/custom-toast";
 
 interface Wallet {
   id: string;
@@ -71,7 +72,7 @@ const COLOR_PALETTES = [
 export default function Dashboard() {
   const { user } = useAuth();
   const router = useRouter();
-  
+
   // Data States
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [recentTransactions, setRecentTransactions] = useState<Transaction[]>([]);
@@ -83,7 +84,7 @@ export default function Dashboard() {
   const [isAddWalletOpen, setIsAddWalletOpen] = useState(false);
   const [isManageWalletsOpen, setIsManageWalletsOpen] = useState(false);
   const [editingWallet, setEditingWallet] = useState<Wallet | null>(null);
-  
+
   // Form values & Validation Errors
   const [walletName, setWalletName] = useState("");
   const [startingBalance, setStartingBalance] = useState("");
@@ -93,7 +94,7 @@ export default function Dashboard() {
   const [selectedColor, setSelectedColor] = useState("from-emerald-500 to-teal-600");
   const [selectedIcon, setSelectedIcon] = useState("Wallet");
   const [errors, setErrors] = useState<Record<string, string>>({});
-  
+
   const [submitting, setSubmitting] = useState(false);
   const [seeding, setSeeding] = useState(false);
 
@@ -162,7 +163,7 @@ export default function Dashboard() {
 
     } catch (err) {
       console.error("Error loading dashboard data:", err);
-      toast.error("Failed to load dashboard data.");
+      customToast.error("Failed to load dashboard data.");
     } finally {
       setLoading(false);
     }
@@ -226,8 +227,8 @@ export default function Dashboard() {
     // Validation Schema
     const validationSchema = z.object({
       name: z.string().min(1, "Wallet name is required").max(50, "Wallet name must be under 50 characters"),
-      balance: isCreditCard 
-        ? z.coerce.number() 
+      balance: isCreditCard
+        ? z.coerce.number()
         : z.coerce.number().min(0, "Starting balance must be non-negative for standard wallets")
     });
 
@@ -267,10 +268,10 @@ export default function Dashboard() {
       setSelectedColor("from-emerald-500 to-teal-600");
       setSelectedIcon("Wallet");
       fetchDashboardData();
-      toast.success("Wallet created successfully!");
+      customToast.success("Wallet created successfully!");
     } catch (error: any) {
       console.error("Error adding wallet:", error);
-      toast.error(error.message || "Failed to add wallet");
+      customToast.error(error.message || "Failed to add wallet");
     } finally {
       setSubmitting(false);
     }
@@ -321,10 +322,10 @@ export default function Dashboard() {
       setSelectedColor("from-emerald-500 to-teal-600");
       setSelectedIcon("Wallet");
       fetchDashboardData();
-      toast.success("Wallet updated successfully!");
+      customToast.success("Wallet updated successfully!");
     } catch (error: any) {
       console.error("Error updating wallet:", error);
-      toast.error(error.message || "Failed to update wallet");
+      customToast.error(error.message || "Failed to update wallet");
     } finally {
       setSubmitting(false);
     }
@@ -332,19 +333,25 @@ export default function Dashboard() {
 
   // CRUD: Delete Wallet
   const handleDeleteWallet = async (id: string) => {
-    if (!window.confirm("Are you sure you want to delete this wallet? All associated transactions will be deleted!")) return;
+    customToast.confirm(
+      "Are you sure you want to delete this wallet? All associated transactions will be deleted!",
+      async () => {
+        try {
+          const { error } = await supabase
+            .from("wallets")
+            .delete()
+            .eq("id", id);
 
-    try {
-      const { error } = await supabase
-        .from("wallets")
-        .delete()
-        .eq("id", id);
-
-      if (error) throw error;
-      fetchDashboardData();
-    } catch (error) {
-      console.error("Error deleting wallet:", error);
-    }
+          if (error) throw error;
+          fetchDashboardData();
+          customToast.success("Wallet deleted successfully!");
+        } catch (error: any) {
+          console.error("Error deleting wallet:", error);
+          customToast.error(error.message || "Failed to delete wallet");
+        }
+      },
+      { confirmLabel: "Delete", variant: "danger" }
+    );
   };
 
   // SEED DATA UTILITY
@@ -369,7 +376,7 @@ export default function Dashboard() {
       // Find "Ví tiền mặt" (Default wallet)
       const cashWallet = wallets.find(w => w.name === "Ví tiền mặt");
       const cashWalletId = cashWallet?.id;
-      
+
       const tcbWalletId = createdWallets.find(w => w.name === "Techcombank")?.id;
       const momoWalletId = createdWallets.find(w => w.name === "MoMo Wallet")?.id;
       const creditWalletId = createdWallets.find(w => w.name === "Credit Card")?.id;
@@ -483,7 +490,7 @@ export default function Dashboard() {
           <div className="rounded-3xl bg-card border border-border p-6 relative overflow-hidden shadow-sm">
             <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 dark:bg-emerald-500/10 blur-[40px] rounded-full pointer-events-none" />
             <div className="absolute bottom-0 left-0 w-24 h-24 bg-blue-500/5 dark:bg-blue-500/10 blur-[35px] rounded-full pointer-events-none" />
-            
+
             <p className="text-xs font-bold text-muted-foreground tracking-wide uppercase">Net Worth</p>
             <div className="mt-2 flex items-baseline gap-2">
               <h1 className="text-3xl font-extrabold tracking-tight font-heading">
@@ -505,15 +512,28 @@ export default function Dashboard() {
 
           {/* 2. RESPONSIVE GRID */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
-            
+
             {/* WALLETS SECTION */}
             <div className="space-y-3">
               <div className="flex items-center justify-between px-1">
                 <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
                   Accounts & Wallets ({wallets.length})
                 </h3>
-                <button 
-                  onClick={() => setIsManageWalletsOpen(true)}
+                <button
+                  onClick={() => {
+                    if (wallets.length > 0) {
+                      const firstWallet = wallets[0];
+                      setEditingWallet(firstWallet);
+                      setWalletName(firstWallet.name);
+                      setIsCreditCard(firstWallet.is_credit_card || false);
+                      setIsHidden(firstWallet.is_hidden || false);
+                      setIsBalanceMasked(firstWallet.is_balance_masked || false);
+                      setSelectedColor(firstWallet.color || "from-emerald-500 to-teal-600");
+                      setSelectedIcon(firstWallet.icon || "Wallet");
+                      setErrors({});
+                      setIsManageWalletsOpen(true);
+                    }
+                  }}
                   className="text-xs text-emerald-500 font-semibold hover:underline flex items-center gap-0.5 cursor-pointer"
                 >
                   Manage <ChevronRight className="h-3 w-3" />
@@ -529,11 +549,21 @@ export default function Dashboard() {
                   return (
                     <div
                       key={wallet.id}
-                      onClick={() => router.push(`/transactions?walletId=${wallet.id}`)}
+                      onClick={() => {
+                        setEditingWallet(wallet);
+                        setWalletName(wallet.name);
+                        setIsCreditCard(wallet.is_credit_card || false);
+                        setIsHidden(wallet.is_hidden || false);
+                        setIsBalanceMasked(wallet.is_balance_masked || false);
+                        setSelectedColor(wallet.color || "from-emerald-500 to-teal-600");
+                        setSelectedIcon(wallet.icon || "Wallet");
+                        setErrors({});
+                        setIsManageWalletsOpen(true);
+                      }}
                       className={`snap-start shrink-0 w-44 md:w-auto md:shrink rounded-2xl p-4 bg-gradient-to-br ${color} border transition-all duration-300 cursor-pointer select-none flex flex-col justify-between h-28 relative overflow-hidden border-transparent hover:scale-[1.01]`}
                     >
                       <div className="absolute top-[-10%] right-[-10%] w-20 h-20 bg-white/5 rounded-full pointer-events-none" />
-                      
+
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-bold text-white/95 tracking-wide bg-white/10 px-2 py-0.5 rounded-full backdrop-blur-md flex items-center gap-1">
                           {wallet.name}
@@ -542,7 +572,7 @@ export default function Dashboard() {
                         </span>
                         <WalletIconComponent className="h-4 w-4 text-white/80" />
                       </div>
-                      
+
                       <div className="mt-auto">
                         <span className="text-[9px] text-white/60 block uppercase font-medium">Balance</span>
                         {(wallet.is_hidden || wallet.is_balance_masked) ? (
@@ -558,7 +588,7 @@ export default function Dashboard() {
                 })}
 
                 {/* Quick Add Card */}
-                <div 
+                <div
                   onClick={() => {
                     setEditingWallet(null);
                     setWalletName("");
@@ -623,18 +653,17 @@ export default function Dashboard() {
                     const TxIcon = getTxIcon(tx.category_name || "");
                     const amountVal = Number(tx.amount);
                     const isExpense = tx.type === "EXPENSE" || tx.type === "DEBT_LENT" || tx.type === "TRANSFER";
-                    
+
                     return (
-                      <div 
-                        key={tx.id} 
+                      <div
+                        key={tx.id}
                         className="flex items-center justify-between p-3.5 rounded-2xl bg-card border border-border hover:border-muted-foreground/30 hover:shadow-sm transition-all duration-200"
                       >
                         <div className="flex items-center gap-3">
-                          <div className={`p-2.5 rounded-xl ${
-                            isExpense 
-                              ? "bg-rose-500/10 text-rose-500" 
-                              : "bg-emerald-500/10 text-emerald-500"
-                          }`}>
+                          <div className={`p-2.5 rounded-xl ${isExpense
+                            ? "bg-rose-500/10 text-rose-500"
+                            : "bg-emerald-500/10 text-emerald-500"
+                            }`}>
                             <TxIcon className="h-4 w-4" />
                           </div>
                           <div>
@@ -646,7 +675,7 @@ export default function Dashboard() {
                               <span className="w-1 h-1 rounded-full bg-border" />
                               <span className="text-[9px] text-muted-foreground">{tx.wallet_name}</span>
                             </div>
-                            
+
                             {tx.note && (
                               <p className="text-[9px] text-muted-foreground/80 italic mt-1 font-medium bg-accent/40 px-1.5 py-0.5 rounded inline-block">
                                 Note: "{tx.note}"
@@ -654,13 +683,12 @@ export default function Dashboard() {
                             )}
                           </div>
                         </div>
-                        
+
                         <div className="text-right">
-                          <span className={`text-xs font-bold font-heading ${
-                            isExpense 
-                              ? "text-rose-500" 
-                              : "text-emerald-500"
-                          }`}>
+                          <span className={`text-xs font-bold font-heading ${isExpense
+                            ? "text-rose-500"
+                            : "text-emerald-500"
+                            }`}>
                             {isExpense ? "-" : "+"}{formatCurrency(amountVal)}
                           </span>
                           <span className="text-[9px] text-muted-foreground block mt-0.5">{tx.category_name}</span>
@@ -679,7 +707,7 @@ export default function Dashboard() {
           </div>
 
           {/* 3. FLOATING ACTION BUTTON (FAB) */}
-          <Link 
+          <Link
             href="/transactions?tab=ai"
             className="fixed bottom-24 right-6 md:absolute md:bottom-8 md:right-8 flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-r from-emerald-500 to-teal-600 text-slate-950 shadow-lg shadow-emerald-500/25 hover:from-emerald-400 hover:to-teal-500 hover:scale-105 active:scale-95 transition-all duration-200 z-30 animate-fade-in"
           >
@@ -692,7 +720,7 @@ export default function Dashboard() {
       {isAddWalletOpen && (
         <Portal>
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-            <form 
+            <form
               onSubmit={handleAddWallet}
               className="w-full max-w-md bg-card border border-border rounded-3xl p-6 space-y-4 shadow-xl animate-scale-up text-foreground font-sans"
             >
@@ -781,11 +809,10 @@ export default function Dashboard() {
                         key={item.name}
                         type="button"
                         onClick={() => setSelectedIcon(item.name)}
-                        className={`p-2.5 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${
-                          isSelected 
-                            ? "border-emerald-500 bg-emerald-500/10 text-emerald-500" 
-                            : "border-border bg-background hover:bg-accent/40 text-muted-foreground"
-                        }`}
+                        className={`p-2.5 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${isSelected
+                          ? "border-emerald-500 bg-emerald-500/10 text-emerald-500"
+                          : "border-border bg-background hover:bg-accent/40 text-muted-foreground"
+                          }`}
                       >
                         <IconComp className="h-4 w-4" />
                       </button>
@@ -805,9 +832,8 @@ export default function Dashboard() {
                         key={color.value}
                         type="button"
                         onClick={() => setSelectedColor(color.value)}
-                        className={`h-8 rounded-xl bg-gradient-to-br ${color.value} border-2 transition-all cursor-pointer ${
-                          isSelected ? "border-emerald-500 scale-105 shadow-md shadow-black/10" : "border-transparent opacity-85 hover:opacity-100"
-                        }`}
+                        className={`h-8 rounded-xl bg-gradient-to-br ${color.value} border-2 transition-all cursor-pointer ${isSelected ? "border-emerald-500 scale-105 shadow-md shadow-black/10" : "border-transparent opacity-85 hover:opacity-100"
+                          }`}
                         title={color.name}
                       />
                     );
@@ -836,13 +862,13 @@ export default function Dashboard() {
         </Portal>
       )}
 
-      {/* --- MANAGE WALLETS MODAL --- */}
-      {isManageWalletsOpen && (
+      {/* --- EDIT WALLET MODAL (RESPONSIVE BOTTOM SHEET / POPUP) --- */}
+      {isManageWalletsOpen && editingWallet && (
         <Portal>
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-            <div className="w-full max-w-lg bg-card border border-border rounded-3xl p-6 max-h-[85%] overflow-y-auto space-y-4 shadow-xl animate-scale-up text-foreground font-sans">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-0 md:p-4 animate-fade-in">
+            <div className="w-full md:max-w-lg bg-card border border-border md:rounded-3xl rounded-t-3xl rounded-b-none p-6 md:max-h-[85%] max-h-[90%] overflow-y-auto space-y-4 shadow-xl md:animate-scale-up animate-slide-up text-foreground font-sans fixed md:relative bottom-0 md:bottom-auto">
               <div className="flex items-center justify-between pb-3 border-b border-border">
-                <h3 className="text-sm font-bold font-heading">Manage Accounts & Wallets</h3>
+                <h3 className="text-sm font-bold font-heading">Edit Account/Wallet</h3>
                 <button
                   type="button"
                   onClick={() => {
@@ -857,206 +883,198 @@ export default function Dashboard() {
                 </button>
               </div>
 
-              {editingWallet ? (
-                /* Edit Wallet Form */
-                <form onSubmit={handleUpdateWallet} className="p-4 bg-background border border-border rounded-2xl space-y-4 animate-scale-up">
-                  <h4 className="text-xs font-bold border-b border-border pb-1.5">Edit Wallet Configuration</h4>
-                  
-                  {/* Toggles */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className="flex items-center gap-2 bg-card border border-border p-2 rounded-xl cursor-pointer hover:bg-accent/30 transition-all select-none">
-                      <input
-                        type="checkbox"
-                        checked={isCreditCard}
-                        onChange={(e) => setIsCreditCard(e.target.checked)}
-                        className="accent-emerald-500 h-4 w-4 rounded border-border"
-                      />
-                      <div className="flex flex-col">
-                        <span className="text-[10px] font-bold">Credit Card</span>
-                        <span className="text-[7px] text-muted-foreground">Allows negative balance</span>
-                      </div>
-                    </label>
+              {/* Top Wallet Selector */}
+              {wallets.length > 1 && (
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Switch Wallet to Edit</label>
+                  <Select
+                    value={editingWallet.id}
+                    onValueChange={(val) => {
+                      const selected = wallets.find(w => w.id === val);
+                      if (selected) {
+                        setEditingWallet(selected);
+                        setWalletName(selected.name);
+                        setIsCreditCard(selected.is_credit_card || false);
+                        setIsHidden(selected.is_hidden || false);
+                        setIsBalanceMasked(selected.is_balance_masked || false);
+                        setSelectedColor(selected.color || "from-emerald-500 to-teal-600");
+                        setSelectedIcon(selected.icon || "Wallet");
+                        setErrors({});
+                      }
+                    }}
+                    options={wallets.map(w => ({ value: w.id, label: w.name }))}
+                  />
+                </div>
+              )}
 
-                    <label className="flex items-center gap-2 bg-card border border-border p-2 rounded-xl cursor-pointer hover:bg-accent/30 transition-all select-none">
-                      <input
-                        type="checkbox"
-                        checked={isHidden}
-                        onChange={(e) => setIsHidden(e.target.checked)}
-                        className="accent-emerald-500 h-4 w-4 rounded border-border"
-                      />
-                      <div className="flex flex-col">
-                        <span className="text-[10px] font-bold">Hide Wallet</span>
-                        <span className="text-[7px] text-muted-foreground">Exclude from Net Worth</span>
-                      </div>
-                    </label>
-                  </div>
-
-                  {/* Mask Balance Toggle */}
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-card border border-border">
-                    <label className="flex items-center gap-3 cursor-pointer w-full">
-                      <div className="relative">
-                        <input
-                          type="checkbox"
-                          className="sr-only peer"
-                          checked={isBalanceMasked}
-                          onChange={(e) => setIsBalanceMasked(e.target.checked)}
-                        />
-                        <div className="w-8 h-4.5 rounded-full border border-border bg-muted peer-checked:bg-emerald-500 peer-checked:border-emerald-500 transition-all" />
-                        <div className="absolute top-0.5 left-0.5 w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-transform peer-checked:translate-x-3.5" />
-                      </div>
-                      <div>
-                        <span className="text-[10px] font-bold flex items-center gap-1">
-                          <EyeOff className="h-3 w-3" /> Mask Balance
-                        </span>
-                        <span className="text-[7px] text-muted-foreground">Hide balance amount with ••••••</span>
-                      </div>
-                    </label>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Name</label>
+              <form onSubmit={handleUpdateWallet} className="space-y-4">
+                {/* Toggles */}
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="flex items-center gap-2 bg-background border border-border p-2 rounded-xl cursor-pointer hover:bg-accent/30 transition-all select-none">
                     <input
-                      type="text"
-                      required
-                      value={walletName}
-                      onChange={(e) => setWalletName(e.target.value)}
-                      className="w-full bg-card border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                      type="checkbox"
+                      checked={isCreditCard}
+                      onChange={(e) => setIsCreditCard(e.target.checked)}
+                      className="accent-emerald-500 h-4 w-4 rounded border-border"
                     />
-                    {errors.name && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.name}</span>}
-                  </div>
-
-                  {/* Icon Select */}
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Icon</label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {[
-                        { name: "Wallet", icon: WalletIcon },
-                        { name: "CreditCard", icon: CreditCard },
-                        { name: "Smartphone", icon: Smartphone },
-                        { name: "PiggyBank", icon: PiggyBank }
-                      ].map((item) => {
-                        const IconComp = item.icon;
-                        const isSelected = selectedIcon === item.name;
-                        return (
-                          <button
-                            key={item.name}
-                            type="button"
-                            onClick={() => setSelectedIcon(item.name)}
-                            className={`p-2 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${
-                              isSelected 
-                                ? "border-emerald-500 bg-emerald-500/10 text-emerald-500" 
-                                : "border-border bg-card hover:bg-accent/40 text-muted-foreground"
-                            }`}
-                          >
-                            <IconComp className="h-3.5 w-3.5" />
-                          </button>
-                        );
-                      })}
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-bold">Credit Card</span>
+                      <span className="text-[7px] text-muted-foreground">Allows negative balance</span>
                     </div>
-                  </div>
+                  </label>
 
-                  {/* Theme Select */}
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Color Theme</label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {COLOR_PALETTES.map((color) => {
-                        const isSelected = selectedColor === color.value;
-                        return (
-                          <button
-                            key={color.value}
-                            type="button"
-                            onClick={() => setSelectedColor(color.value)}
-                            className={`h-7 rounded-xl bg-gradient-to-br ${color.value} border-2 transition-all cursor-pointer ${
-                              isSelected ? "border-emerald-500 scale-105 shadow-md shadow-black/10" : "border-transparent opacity-85 hover:opacity-100"
-                            }`}
-                            title={color.name}
-                          />
-                        );
-                      })}
+                  <label className="flex items-center gap-2 bg-background border border-border p-2 rounded-xl cursor-pointer hover:bg-accent/30 transition-all select-none">
+                    <input
+                      type="checkbox"
+                      checked={isHidden}
+                      onChange={(e) => setIsHidden(e.target.checked)}
+                      className="accent-emerald-500 h-4 w-4 rounded border-border"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-bold">Hide Wallet</span>
+                      <span className="text-[7px] text-muted-foreground">Exclude from Net Worth</span>
                     </div>
-                  </div>
+                  </label>
+                </div>
 
-                  <div className="flex justify-end gap-2 text-xs border-t border-border pt-3">
+                {/* Mask Balance Toggle */}
+                <div className="flex items-center justify-between p-3 rounded-xl bg-background border border-border">
+                  <label className="flex items-center gap-3 cursor-pointer w-full">
+                    <div className="relative">
+                      <input
+                        type="checkbox"
+                        className="sr-only peer"
+                        checked={isBalanceMasked}
+                        onChange={(e) => setIsBalanceMasked(e.target.checked)}
+                      />
+                      <div className="w-8 h-4.5 rounded-full border border-border bg-muted peer-checked:bg-emerald-500 peer-checked:border-emerald-500 transition-all" />
+                      <div className="absolute top-0.5 left-0.5 w-3.5 h-3.5 bg-white rounded-full shadow-sm transition-transform peer-checked:translate-x-3.5" />
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold flex items-center gap-1">
+                        <EyeOff className="h-3 w-3" /> Mask Balance
+                      </span>
+                      <span className="text-[7px] text-muted-foreground">Hide balance amount with ••••••</span>
+                    </div>
+                  </label>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Name</label>
+                  <input
+                    type="text"
+                    value={walletName}
+                    onChange={(e) => setWalletName(e.target.value)}
+                    className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
+                  />
+                  {errors.name && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.name}</span>}
+                </div>
+
+                {/* Icon Select */}
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Wallet Icon</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {[
+                      { name: "Wallet", icon: WalletIcon },
+                      { name: "CreditCard", icon: CreditCard },
+                      { name: "Smartphone", icon: Smartphone },
+                      { name: "PiggyBank", icon: PiggyBank }
+                    ].map((item) => {
+                      const IconComp = item.icon;
+                      const isSelected = selectedIcon === item.name;
+                      return (
+                        <button
+                          key={item.name}
+                          type="button"
+                          onClick={() => setSelectedIcon(item.name)}
+                          className={`p-2 rounded-xl border flex items-center justify-center transition-all cursor-pointer ${isSelected
+                            ? "border-emerald-500 bg-emerald-500/10 text-emerald-500"
+                            : "border-border bg-background hover:bg-accent/40 text-muted-foreground"
+                            }`}
+                        >
+                          <IconComp className="h-3.5 w-3.5" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Theme Select */}
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Color Theme</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {COLOR_PALETTES.map((color) => {
+                      const isSelected = selectedColor === color.value;
+                      return (
+                        <button
+                          key={color.value}
+                          type="button"
+                          onClick={() => setSelectedColor(color.value)}
+                          className={`h-7 rounded-xl bg-gradient-to-br ${color.value} border-2 transition-all cursor-pointer ${isSelected ? "border-emerald-500 scale-105 shadow-md shadow-black/10" : "border-transparent opacity-85 hover:opacity-100"
+                            }`}
+                          title={color.name}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex gap-2 text-xs border-t border-border pt-3">
+                  {editingWallet.name !== "Ví tiền mặt" && (
                     <button
                       type="button"
                       onClick={() => {
-                        setEditingWallet(null);
-                        setWalletName("");
-                        setErrors({});
+                        customToast.confirm(
+                          "Are you sure you want to delete this wallet? All associated transactions will be deleted!",
+                          async () => {
+                            setSubmitting(true);
+                            try {
+                              const { error } = await supabase
+                                .from("wallets")
+                                .delete()
+                                .eq("id", editingWallet.id);
+
+                              if (error) throw error;
+                              setIsManageWalletsOpen(false);
+                              setEditingWallet(null);
+                              fetchDashboardData();
+                              customToast.success("Wallet deleted successfully!");
+                            } catch (error: any) {
+                              console.error("Error deleting wallet:", error);
+                              customToast.error(error.message || "Failed to delete wallet");
+                            } finally {
+                              setSubmitting(false);
+                            }
+                          },
+                          { confirmLabel: "Delete", variant: "danger" }
+                        );
                       }}
-                      className="px-3 py-1.5 rounded-lg bg-accent text-muted-foreground"
+                      className="px-3.5 py-2 rounded-xl border border-rose-500/20 bg-rose-500/10 text-rose-550 hover:bg-rose-500/25 transition-colors cursor-pointer text-xs flex items-center justify-center gap-1.5"
                     >
-                      Cancel
+                      <Trash2 className="h-4 w-4" /> Delete
                     </button>
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-bold flex items-center gap-1.5"
-                    >
-                      {submitting ? "Saving..." : "Save Config"}
-                    </button>
-                  </div>
-                </form>
-              ) : null}
-
-              <div className="space-y-2">
-                {wallets.map((wallet) => (
-                  <div 
-                    key={wallet.id}
-                    className="flex items-center justify-between p-3.5 rounded-2xl bg-background border border-border"
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsManageWalletsOpen(false);
+                      setEditingWallet(null);
+                      setWalletName("");
+                      setErrors({});
+                    }}
+                    className="flex-1 py-2 rounded-xl bg-accent border border-border text-muted-foreground hover:text-foreground font-semibold transition-colors cursor-pointer text-center"
                   >
-                    <div>
-                      <h4 className="text-xs font-bold flex items-center gap-1.5">
-                        {wallet.name}
-                        {wallet.is_credit_card && (
-                          <span className="text-[7px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-350 px-1 rounded">Credit</span>
-                        )}
-                        {wallet.is_hidden && (
-                          <span className="text-[7px] font-bold bg-rose-500/10 text-rose-500 px-1 rounded flex items-center gap-0.5"><EyeOff className="h-2 w-2" /> Hidden</span>
-                        )}
-                      </h4>
-                      <span className="text-[10px] text-muted-foreground block mt-0.5">
-                        Balance: {formatCurrency(Number(wallet.balance))}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          setEditingWallet(wallet);
-                          setWalletName(wallet.name);
-                          setIsCreditCard(wallet.is_credit_card || false);
-                          setIsHidden(wallet.is_hidden || false);
-                          setIsBalanceMasked(wallet.is_balance_masked || false);
-                          setSelectedColor(wallet.color || "from-emerald-500 to-teal-600");
-                          setSelectedIcon(wallet.icon || "Wallet");
-                          setErrors({});
-                        }}
-                        className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                      >
-                        <Edit2 className="h-3.5 w-3.5" />
-                      </button>
-                      
-                      {wallet.name !== "Ví tiền mặt" && (
-                        <button
-                          onClick={() => handleDeleteWallet(wallet.id)}
-                          className="p-2 rounded-xl text-rose-550 hover:bg-rose-500/10 transition-colors cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="pt-3 border-t border-border flex justify-end">
-                <button
-                  onClick={() => setIsManageWalletsOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-accent text-xs font-semibold cursor-pointer"
-                >
-                  Close
-                </button>
-              </div>
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="flex-1 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-bold transition-all disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         </Portal>

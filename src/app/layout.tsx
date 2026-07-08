@@ -28,6 +28,7 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${plusJakartaSans.variable} ${lexend.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
       <head>
         <script

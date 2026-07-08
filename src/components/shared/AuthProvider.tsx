@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState, useRef } from "react";
 import { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { useRouter, usePathname } from "next/navigation";
@@ -24,6 +24,12 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
   const [loading, setLoading] = useState(true);
   const router = useRouter();
   const pathname = usePathname();
+  const pathnameRef = useRef(pathname);
+
+  // Keep the ref updated with the latest pathname to avoid stale closure issues in event listeners
+  useEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
 
   useEffect(() => {
     // 1. Get initial session
@@ -60,7 +66,7 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
         setLoading(false);
         // Only redirect on explicit SIGNED_IN (not INITIAL_SESSION to avoid loop)
         if (event === "SIGNED_IN") {
-          if (pathname === "/login" || pathname === "/") {
+          if (pathnameRef.current === "/login" || pathnameRef.current === "/") {
             router.push("/dashboard");
           }
         }
@@ -68,7 +74,7 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
         setUser(null);
         document.cookie = "sb-access-token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax; Secure";
         setLoading(false);
-        if (pathname !== "/login" && pathname !== "/") {
+        if (pathnameRef.current !== "/login" && pathnameRef.current !== "/") {
           router.push("/login");
         }
       } else if (event === "TOKEN_REFRESHED") {

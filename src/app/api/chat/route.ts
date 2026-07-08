@@ -121,8 +121,8 @@ function buildPrompt(message: string, wallets: string[], categories: Category[],
     : "- Cash"; // Fallback default
   
   const categoryListStr = categories.length > 0
-    ? categories.map((c) => `- ${c.name} (${c.type})`).join("\n")
-    : "- Dining (EXPENSE)\n- Salary (INCOME)"; // Fallback default
+    ? categories.map((c) => `- ${c.name}`).join("\n")
+    : "- Dining\n- Salary"; // Fallback default
 
   const partnerListStr = partners.length > 0
     ? partners.map((p) => `- ${p}`).join("\n")
@@ -155,8 +155,7 @@ ${partnerListStr}
    - If the user specifies a wallet (e.g., "momo", "vcb", "cash") that matches or is close to one in the list, map to it.
    - If no specific wallet is specified or it is ambiguous, select the most likely wallet, or default to the first wallet: "${wallets[0] || 'Momo'}".
 4. For TRANSFER type, also extract 'to_wallet' as the destination wallet from [AVAILABLE WALLET ACCOUNTS]. It must be different from 'wallet'.
-5. Map 'category' to one of the [AVAILABLE CATEGORIES] listed above. It must match exactly and be of the correct type (EXPENSE or INCOME).
-   - E.g., if type is EXPENSE, map to an EXPENSE category. If type is INCOME, map to an INCOME category.
+5. Map 'category' to one of the [AVAILABLE CATEGORIES] listed above. It must match exactly. Any category can be used for either INCOME or EXPENSE transactions.
    - For DEBT_LENT, DEBT_BORROWED, DEBT_REPAYMENT, and TRANSFER, 'category' is not required and should be null or omitted.
 6. Extract 'description' as a short, meaningful description of the transaction (e.g. "Highlands Coffee", "Supermarket shopping", "Salary payment", "Bus fare", "Cho Huy vay", "Vay anh Nam", "Trả nợ anh Nam", "Huy trả nợ", "Chuyển tiền Momo → Credit"). Make sure it is descriptive.
 7. Extract 'partner' (Only for DEBT_LENT, DEBT_BORROWED, or DEBT_REPAYMENT):
@@ -287,24 +286,13 @@ function validateAndNormalize(result: any, wallets: string[], categories: Catego
   let category: string | null = null;
   if (type === "INCOME" || type === "EXPENSE") {
     const rawCategory = (result.category || "").trim();
-    const typedCategories = categories.filter((c) => c.type === type);
-    const matchedCategory = typedCategories.find(
+    const matchedCategory = categories.find(
       (c) => c.name.toLowerCase() === rawCategory.toLowerCase()
     );
     if (matchedCategory) {
       category = matchedCategory.name;
-    } else {
-      // Try matching any category type just in case
-      const fallbackMatched = categories.find(
-        (c) => c.name.toLowerCase() === rawCategory.toLowerCase()
-      );
-      if (fallbackMatched) {
-        category = fallbackMatched.name;
-      } else if (typedCategories.length > 0) {
-        category = typedCategories[0].name;
-      } else if (categories.length > 0) {
-        category = categories[0].name;
-      }
+    } else if (categories.length > 0) {
+      category = categories[0].name;
     }
   }
 
