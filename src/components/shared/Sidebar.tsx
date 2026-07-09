@@ -2,13 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { 
-  Wallet, 
-  Home, 
-  MessageSquare, 
-  Receipt, 
-  PieChart, 
-  Info, 
+import {
+  Wallet,
+  Home,
+  MessageSquare,
+  Receipt,
+  PieChart,
+  Info,
   ChevronRight,
   Sparkles,
   Tag
@@ -51,18 +51,16 @@ export default function Sidebar() {
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`flex items-center justify-between p-3 rounded-xl transition-all duration-200 group ${
-                    isActive 
-                      ? "bg-accent border border-border text-emerald-500 dark:text-emerald-400 shadow-inner" 
+                  className={`flex items-center justify-between p-3 rounded-xl transition-all duration-200 group ${isActive
+                      ? "bg-accent border border-border text-emerald-500 dark:text-emerald-400 shadow-inner"
                       : "text-muted-foreground hover:bg-accent/40 hover:text-foreground border border-transparent"
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-lg transition-colors ${
-                      isActive 
-                        ? "bg-emerald-500/10 text-emerald-500" 
+                    <div className={`p-2 rounded-lg transition-colors ${isActive
+                        ? "bg-emerald-500/10 text-emerald-500"
                         : "bg-background text-muted-foreground group-hover:text-foreground"
-                    }`}>
+                      }`}>
                       <Icon className="h-4 w-4" />
                     </div>
                     <div>
@@ -70,9 +68,8 @@ export default function Sidebar() {
                       <div className="text-[10px] text-muted-foreground mt-0.5">{item.desc}</div>
                     </div>
                   </div>
-                  <ChevronRight className={`h-4 w-4 opacity-0 transition-all ${
-                    isActive ? "opacity-100 text-emerald-500 dark:text-emerald-400 translate-x-0" : "group-hover:opacity-40 group-hover:translate-x-0.5 text-muted-foreground"
-                  }`} />
+                  <ChevronRight className={`h-4 w-4 opacity-0 transition-all ${isActive ? "opacity-100 text-emerald-500 dark:text-emerald-400 translate-x-0" : "group-hover:opacity-40 group-hover:translate-x-0.5 text-muted-foreground"
+                    }`} />
                 </Link>
               );
             })}
@@ -96,7 +93,7 @@ export default function Sidebar() {
 
       {/* Footer Info */}
       <div className="pt-4 border-t border-border flex items-center justify-between text-[11px] text-muted-foreground">
-        <span>v1.0.0</span>
+        <span>v1.0.1</span>
         <a href="#" className="hover:text-foreground flex items-center gap-1">
           <Info className="h-3 w-3" /> Guides
         </a>
