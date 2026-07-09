@@ -10,6 +10,7 @@ interface MoneyInputProps {
   required?: boolean;
   disabled?: boolean;
   id?: string;
+  allowNegative?: boolean;
 }
 
 /**
@@ -25,22 +26,27 @@ export function MoneyInput({
   required = false,
   disabled = false,
   id,
+  allowNegative = false,
 }: MoneyInputProps) {
   // Format raw number string to display with dot separators
   const formatDisplay = (raw: string): string => {
     if (!raw) return "";
+    const isNegative = allowNegative && raw.startsWith("-");
     const digits = raw.replace(/\D/g, "");
-    if (!digits) return "";
-    return parseInt(digits, 10).toLocaleString("de-DE"); // de-DE uses dots for thousands
+    if (!digits) return isNegative ? "-" : "";
+    const formatted = parseInt(digits, 10).toLocaleString("de-DE"); // de-DE uses dots for thousands
+    return isNegative ? `-${formatted}` : formatted;
   };
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      // Strip everything that's not a digit
-      const raw = e.target.value.replace(/\D/g, "");
+      const val = e.target.value;
+      const isNegative = allowNegative && val.startsWith("-");
+      const digits = val.replace(/\D/g, "");
+      const raw = isNegative ? `-${digits}` : digits;
       onChange(raw);
     },
-    [onChange]
+    [onChange, allowNegative]
   );
 
   return (
@@ -57,3 +63,4 @@ export function MoneyInput({
     />
   );
 }
+

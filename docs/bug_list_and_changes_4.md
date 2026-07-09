@@ -1,0 +1,3 @@
+- cho phép điều chỉnh số dư ví trực tiếp
+- bỏ hoàn toàn nút manage ở dashboard
+- có 1 chút delay nhẹ, khi tạo transaction, những tab analytics, hoặc dashboard không cập nhật ngay lập tức (lỗi nhỏ, chưa cần fix)

@@ -282,12 +282,17 @@ export default function Dashboard() {
     e.preventDefault();
     if (!editingWallet || !user) return;
 
+    const balanceVal = startingBalance ? parseFloat(startingBalance) : 0;
+
     // Validation Schema
     const validationSchema = z.object({
-      name: z.string().min(1, "Wallet name is required").max(50, "Wallet name must be under 50 characters")
+      name: z.string().min(1, "Wallet name is required").max(50, "Wallet name must be under 50 characters"),
+      balance: isCreditCard
+        ? z.coerce.number()
+        : z.coerce.number().min(0, "Balance must be non-negative for standard wallets")
     });
 
-    const check = validationSchema.safeParse({ name: walletName.trim() });
+    const check = validationSchema.safeParse({ name: walletName.trim(), balance: balanceVal });
     if (!check.success) {
       const errMap: Record<string, string> = {};
       check.error.issues.forEach((issue) => {
@@ -304,6 +309,7 @@ export default function Dashboard() {
         .from("wallets")
         .update({
           name: walletName.trim(),
+          balance: balanceVal,
           is_credit_card: isCreditCard,
           is_hidden: isHidden,
           is_balance_masked: isBalanceMasked,
@@ -316,6 +322,7 @@ export default function Dashboard() {
 
       setEditingWallet(null);
       setWalletName("");
+      setStartingBalance("");
       setIsCreditCard(false);
       setIsHidden(false);
       setIsBalanceMasked(false);
@@ -519,25 +526,6 @@ export default function Dashboard() {
                 <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
                   Accounts & Wallets ({wallets.length})
                 </h3>
-                <button
-                  onClick={() => {
-                    if (wallets.length > 0) {
-                      const firstWallet = wallets[0];
-                      setEditingWallet(firstWallet);
-                      setWalletName(firstWallet.name);
-                      setIsCreditCard(firstWallet.is_credit_card || false);
-                      setIsHidden(firstWallet.is_hidden || false);
-                      setIsBalanceMasked(firstWallet.is_balance_masked || false);
-                      setSelectedColor(firstWallet.color || "from-emerald-500 to-teal-600");
-                      setSelectedIcon(firstWallet.icon || "Wallet");
-                      setErrors({});
-                      setIsManageWalletsOpen(true);
-                    }
-                  }}
-                  className="text-xs text-emerald-500 font-semibold hover:underline flex items-center gap-0.5 cursor-pointer"
-                >
-                  Manage <ChevronRight className="h-3 w-3" />
-                </button>
               </div>
 
               {/* Responsive Container */}
@@ -552,6 +540,7 @@ export default function Dashboard() {
                       onClick={() => {
                         setEditingWallet(wallet);
                         setWalletName(wallet.name);
+                        setStartingBalance(wallet.balance.toString());
                         setIsCreditCard(wallet.is_credit_card || false);
                         setIsHidden(wallet.is_hidden || false);
                         setIsBalanceMasked(wallet.is_balance_masked || false);
@@ -894,6 +883,7 @@ export default function Dashboard() {
                       if (selected) {
                         setEditingWallet(selected);
                         setWalletName(selected.name);
+                        setStartingBalance(selected.balance.toString());
                         setIsCreditCard(selected.is_credit_card || false);
                         setIsHidden(selected.is_hidden || false);
                         setIsBalanceMasked(selected.is_balance_masked || false);
@@ -968,6 +958,17 @@ export default function Dashboard() {
                     className="w-full bg-background border border-border rounded-xl py-2 px-3 text-xs text-foreground focus:outline-none focus:border-emerald-500/40 font-semibold"
                   />
                   {errors.name && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.name}</span>}
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-muted-foreground uppercase tracking-wider block">Current Balance (VND)</label>
+                  <MoneyInput
+                    value={startingBalance}
+                    onChange={(raw) => setStartingBalance(raw)}
+                    placeholder="e.g. 1.000.000"
+                    allowNegative={isCreditCard}
+                  />
+                  {errors.balance && <span className="text-[10px] text-rose-500 block mt-0.5">{errors.balance}</span>}
                 </div>
 
                 {/* Icon Select */}
