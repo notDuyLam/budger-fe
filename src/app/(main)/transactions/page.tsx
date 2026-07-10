@@ -85,6 +85,8 @@ interface Transaction {
   due_date?: string | null;
   repaid_by_transaction_id?: string | null;
   dateStr?: string;
+  wallet_balance_after?: number | null;
+  to_wallet_balance_after?: number | null;
 }
 
 interface Message {
@@ -437,6 +439,15 @@ function TransactionsContent() {
 
   const formatCurrency = (val: number) => {
     return val.toLocaleString("en-US") + " VND";
+  };
+
+  const formatWalletBalance = (walletId: string, balance?: number | null) => {
+    if (balance === undefined || balance === null) return "";
+    const w = wallets.find(x => x.id === walletId);
+    if (w && (w.is_hidden || w.is_balance_masked)) {
+      return "••••••";
+    }
+    return formatCurrency(balance);
   };
 
   // --- MANUAL CRUD HANDLERS ---
@@ -1398,11 +1409,25 @@ function TransactionsContent() {
                                     <div className="flex items-center gap-1.5 mt-0.5 text-[9px] text-muted-foreground">
                                       <span>{new Date(tx.created_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}</span>
                                       <span>•</span>
-                                      <span>{tx.wallet_name}</span>
+                                      <span>
+                                        {tx.wallet_name}
+                                        {tx.wallet_balance_after !== undefined && tx.wallet_balance_after !== null && (
+                                          <span className="text-[8px] text-muted-foreground/70 ml-1">
+                                            ({formatWalletBalance(tx.wallet_id, tx.wallet_balance_after)})
+                                          </span>
+                                        )}
+                                      </span>
                                       {tx.to_wallet_name && (
                                         <>
                                           <ArrowRight className="h-2 w-2 mx-0.5 inline" />
-                                          <span>{tx.to_wallet_name}</span>
+                                          <span>
+                                            {tx.to_wallet_name}
+                                            {tx.to_wallet_balance_after !== undefined && tx.to_wallet_balance_after !== null && (
+                                              <span className="text-[8px] text-muted-foreground/70 ml-1">
+                                                ({formatWalletBalance(tx.to_wallet_id!, tx.to_wallet_balance_after)})
+                                              </span>
+                                            )}
+                                          </span>
                                         </>
                                       )}
                                     </div>
